@@ -5,7 +5,7 @@
 .venv/
 
 # Generated / large artifacts
-*.db
+# strava.db is intentionally committed (read-only metadata, no secrets)
 *.db-shm
 *.db-wal
 __pycache__/
