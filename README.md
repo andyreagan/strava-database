@@ -96,9 +96,28 @@ Prints:
 
 ---
 
+## Dashboard (GitHub Pages)
+
+The dashboard lives at **[strava.andyreagan.com](https://strava.andyreagan.com)** — a single
+self-contained `index.html` with all 9 000+ activities embedded as JSON.
+
+To regenerate it after a DB update:
+
+```bash
+uv run strava-html               # reads strava.db, writes index.html
+# or explicitly:
+uv run python build_html.py --db strava.db --out index.html
+```
+
+Then commit and push — GitHub Pages serves it automatically from `main`.
+
+```bash
+git add index.html strava.db && git commit -m "Update dashboard" && git push
+```
+
 ## Development
 
 ```bash
-uv run ruff check strava_db.py   # lint
-uv run pytest                    # tests (add to tests/ as needed)
+uv run ruff check strava_db.py build_html.py   # lint
+uv run pytest                                   # tests (add to tests/ as needed)
 ```
