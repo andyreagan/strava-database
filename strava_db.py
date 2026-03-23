@@ -20,6 +20,15 @@ QUERIES (convenience)
   stats           Print a quick summary to stdout.
                   Usage: python strava_db.py stats
 
+  backfill-detail Fetch the full detail endpoint for activities that are
+                  missing workout_type (race / long run / workout flag).
+                  Safe to interrupt and re-run — skips already-filled rows.
+                  Use --sport-types Run Ride to limit scope.
+                  NOTE: costs 1 req/activity; at the Read limit of
+                  1 000 req/day, 9 000 activities takes ~9 days.
+                  See GitHub issue #2.
+                  Usage: python strava_db.py backfill-detail [--sport-types Run Ride]
+
 RATE LIMITS
 -----------
   Strava API rate limits (as of 2026):
@@ -224,6 +233,8 @@ CREATE TABLE IF NOT EXISTS activities (
     athlete_count       INTEGER,
     photo_count         INTEGER,
     pr_count            INTEGER,
+    workout_type        INTEGER,-- 0=default,1=race,2=long run,3=workout (run)
+                                -- 10=default,11=race,12=workout (ride); NULL=unknown
     source              TEXT,   -- "archive" | "api"
     fetched_at          TEXT    -- ISO-8601 UTC when we wrote this row
 );
@@ -334,6 +345,7 @@ def activity_to_row(act: dict, source: str = "api") -> dict:
         "athlete_count":        act.get("athlete_count"),
         "photo_count":          act.get("total_photo_count"),
         "pr_count":             act.get("pr_count"),
+        "workout_type":         act.get("workout_type"),  # None from summary; int from detail
         "source":               source,
         "fetched_at":           now_utc(),
     }
@@ -602,6 +614,75 @@ def do_update(client: StravaClient, db_path: str,
 
 
 # ---------------------------------------------------------------------------
+# Backfill detail fields (workout_type, gear_name) — issue #2
+# ---------------------------------------------------------------------------
+
+WORKOUT_TYPE_LABELS = {
+    0: "Default", 1: "Race", 2: "Long Run", 3: "Workout",
+    10: "Default", 11: "Race", 12: "Workout",
+}
+
+
+def do_backfill_detail(client: StravaClient, db_path: str,
+                       sport_types: Optional[list[str]] = None) -> None:
+    """
+    Fetch the full detail endpoint for activities where workout_type IS NULL,
+    storing workout_type and refreshing gear_name.
+
+    Respects the Read rate limit (100 req / 15 min, 1 000 req / day).
+    Safe to interrupt and re-run — already-filled rows are skipped.
+    """
+    con = open_db(db_path)
+
+    where_types = ""
+    params: list = []
+    if sport_types:
+        placeholders = ",".join("?" * len(sport_types))
+        where_types = f"AND sport_type IN ({placeholders})"
+        params = sport_types
+
+    rows = con.execute(
+        f"SELECT id, sport_type FROM activities "
+        f"WHERE workout_type IS NULL {where_types} "
+        f"ORDER BY start_date_local DESC",
+        params,
+    ).fetchall()
+
+    total = len(rows)
+    print(f"Backfilling detail for {total} activities "
+          f"(workout_type IS NULL{', sport_types=' + str(sport_types) if sport_types else ''}) …")
+    print(f"At 1 000 req/day this will take ≥ {total / 1000:.1f} days.\n")
+
+    for i, row in enumerate(rows, 1):
+        act_id, sport_type = row["id"], row["sport_type"]
+        try:
+            detail = client._get(f"/activities/{act_id}")
+        except Exception as exc:
+            print(f"  [{i}/{total}] {act_id}: ERROR {exc}")
+            continue
+
+        wt        = detail.get("workout_type")
+        gear_name = _s(detail, "gear", "name")
+
+        con.execute(
+            "UPDATE activities SET workout_type=?, gear_name=COALESCE(?, gear_name) "
+            "WHERE id=?",
+            (wt, gear_name, act_id),
+        )
+        if i % 50 == 0:
+            con.commit()
+
+        label = WORKOUT_TYPE_LABELS.get(wt, "—") if wt is not None else "—"
+        print(f"  [{i}/{total}] {act_id}  {(sport_type or ''):<16} "
+              f"workout_type={wt} ({label})  gear={gear_name or '—'}")
+
+    con.commit()
+    set_meta(con, "last_backfill_detail", now_utc())
+    con.commit()
+    print(f"\nBackfill complete. {total} activities processed.")
+
+
+# ---------------------------------------------------------------------------
 # Stats / reporting
 # ---------------------------------------------------------------------------
 
@@ -765,7 +846,8 @@ def main() -> None:
         epilog=__doc__,
     )
     parser.add_argument("mode", choices=["build-archive", "build-api",
-                                         "update", "stats"],
+                                         "update", "stats",
+                                         "backfill-detail"],
                         help="Operation to perform")
     parser.add_argument("archive", nargs="?",
                         help="(build-archive only) Path to Strava export ZIP")
@@ -773,6 +855,10 @@ def main() -> None:
                         help="Override DB_PATH from .env")
     parser.add_argument("--verify-days", type=int, default=30,
                         help="(update) Days to re-verify (default: 30)")
+    parser.add_argument("--sport-types", nargs="+", default=None,
+                        metavar="TYPE",
+                        help="(backfill-detail) Limit to these sport types, "
+                             "e.g. --sport-types Run Ride")
     parser.add_argument("--env", default=".env",
                         help="Path to .env file (default: .env)")
     args = parser.parse_args()
@@ -795,6 +881,10 @@ def main() -> None:
     elif args.mode == "update":
         client = make_client(env_path)
         do_update(client, db_path, verify_days=args.verify_days)
+
+    elif args.mode == "backfill-detail":
+        client = make_client(env_path)
+        do_backfill_detail(client, db_path, sport_types=args.sport_types)
 
     elif args.mode == "stats":
         do_stats(db_path)
