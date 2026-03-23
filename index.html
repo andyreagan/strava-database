@@ -540,7 +540,7 @@ function renderYearly() {
     const pct = total / maxYearMi * 100;
     const segments = topSports.map(s => {
       const mi = yearTotals[y][s]||0;
-      const h = mi / maxYearMi * 100;
+      const h = total > 0 ? mi / total * 100 : 0;  // fraction of THIS year's total
       return `<div style="height:${h.toFixed(1)}%;background:${sportColor(s)};width:100%;border-radius:0" title="${s}: ${mi.toFixed(0)} mi"></div>`;
     }).join('');
     return `<div class="bar-col" style="max-width:80px" title="${y}: ${total.toFixed(0)} mi">
