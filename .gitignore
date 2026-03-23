@@ -1,0 +1,18 @@
+# Secrets — never commit the live .env
+.env
+
+# uv / Python tooling  (.venv is local; uv.lock IS committed)
+.venv/
+
+# Generated / large artifacts
+*.db
+*.db-shm
+*.db-wal
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# macOS
+.DS_Store
