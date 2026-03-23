@@ -87,15 +87,19 @@
   td.num { text-align: right; font-variant-numeric: tabular-nums; }
   .badge { display: inline-block; padding: 1px 7px; border-radius: 99px;
              font-size: 0.7rem; font-weight: 600; background: var(--border); }
-  .badge.Run       { background: #2d4a3e; color: #43aa8b; }
-  .badge.Ride      { background: #3a2d1a; color: #f8961e; }
-  .badge.EBikeRide { background: #3a2d1a; color: #f8961e; }
-  .badge.VirtualRide { background: #3a2d1a; color: #f8961e; }
-  .badge.Walk      { background: #1e2a3a; color: #5fa8d3; }
-  .badge.Hike      { background: #2a1e3a; color: #9d77c9; }
-  .badge.Swim      { background: #1a2e3a; color: #48bfe3; }
-  .badge.commute   { background: #1a2e3a; color: #48bfe3; }
-  .badge.race      { background: #3a1a1a; color: var(--accent); }
+  .badge.Run            { background: #2d4a3e; color: #43aa8b; }
+  .badge.VirtualRun     { background: #1e3a2d; color: #76c893; }
+  .badge.TrailRun       { background: #2a3a1e; color: #a7c957; }
+  .badge.Ride           { background: #3a2d1a; color: #f8961e; }
+  .badge.VirtualRide    { background: #2d1a3a; color: #c77dff; }
+  .badge.EBikeRide      { background: #1a2a1a; color: #80b918; }
+  .badge.GravelRide     { background: #3a2a1a; color: #f4a261; }
+  .badge.MountainBikeRide { background: #2a1a1a; color: #e76f51; }
+  .badge.Walk           { background: #1e2a3a; color: #5fa8d3; }
+  .badge.Hike           { background: #2a1e3a; color: #9d77c9; }
+  .badge.Swim           { background: #1a2e3a; color: #48bfe3; }
+  .badge.commute        { background: #1a2e3a; color: #48bfe3; }
+  .badge.race           { background: #3a1a1a; color: var(--accent); }
 
   /* ── charts ── */
   .chart-wrap { background: var(--surface); border: 1px solid var(--border);
@@ -310,11 +314,22 @@ const WORKOUT_LABELS = {0:'Default',1:'Race',2:'Long Run',3:'Workout',
                           10:'Default',11:'Race',12:'Workout'};
 
 const SPORT_COLORS = {
-  Run:'#43aa8b', VirtualRun:'#43aa8b', Ride:'#f8961e', EBikeRide:'#f8961e',
-  VirtualRide:'#f8961e', GravelRide:'#f8961e', MountainBikeRide:'#f8961e',
-  Walk:'#5fa8d3', Hike:'#9d77c9', Swim:'#48bfe3',
-  WeightTraining:'#e0aaff', Workout:'#e0aaff', Crossfit:'#e0aaff',
-  NordicSki:'#caf0f8', AlpineSki:'#caf0f8',
+  Run:               '#43aa8b',
+  VirtualRun:        '#76c893',
+  TrailRun:          '#a7c957',
+  Ride:              '#f8961e',
+  VirtualRide:       '#c77dff',
+  EBikeRide:         '#80b918',
+  GravelRide:        '#f4a261',
+  MountainBikeRide:  '#e76f51',
+  Walk:              '#5fa8d3',
+  Hike:              '#9d77c9',
+  Swim:              '#48bfe3',
+  WeightTraining:    '#e0aaff',
+  Workout:           '#dee2ff',
+  Crossfit:          '#c8b6ff',
+  NordicSki:         '#caf0f8',
+  AlpineSki:         '#90e0ef',
 };
 const sportColor = s => SPORT_COLORS[s] || '#8b90a0';
 
