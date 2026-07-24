@@ -607,10 +607,61 @@ def do_update(client: StravaClient, db_path: str,
     for act in api_acts.values():
         upsert_activity(con, activity_to_row(act, "api"))
 
+    # ---- Step 3: resolve gear names ----
+    resolve_gear_names(client, con)
+
     con.commit()
     set_meta(con, "last_update", now_utc())
     con.commit()
     print(f"\nUpdate complete. DB: {db_path}")
+
+
+def resolve_gear_names(client: StravaClient, con: sqlite3.Connection) -> None:
+    """
+    Fill activities.gear_name from the gear table.
+
+    The activity-list endpoint returns gear_id but not the gear name, so any
+    gear_id not yet in the gear table is fetched once via /gear/{id} — one
+    request per new bike/shoe, instead of one per activity.
+    """
+    ids = [r["gear_id"] for r in con.execute(
+        "SELECT DISTINCT gear_id FROM activities "
+        "WHERE gear_id IS NOT NULL AND gear_name IS NULL"
+    )]
+    if not ids:
+        return
+
+    known = {r["id"] for r in con.execute("SELECT id FROM gear")}
+    for gid in ids:
+        if gid in known:
+            continue
+        try:
+            g = client._get(f"/gear/{gid}")
+        except Exception as exc:
+            print(f"  [gear] {gid}: ERROR {exc}")
+            continue
+        name = g.get("name") or " ".join(
+            filter(None, [g.get("brand_name"), g.get("model_name")]))
+        upsert_gear(con, {
+            "id":         gid,
+            "name":       name,
+            "brand":      g.get("brand_name"),
+            "model":      g.get("model_name"),
+            # gear.distance_m holds Strava's converted_distance (miles),
+            # matching the rows imported from the archive export
+            "distance_m": g.get("converted_distance"),
+        })
+        print(f"  [gear] fetched {gid}: {name}", flush=True)
+
+    n = con.execute(
+        "UPDATE activities SET gear_name = "
+        "  (SELECT name FROM gear WHERE gear.id = activities.gear_id) "
+        "WHERE gear_id IS NOT NULL AND gear_name IS NULL "
+        "  AND gear_id IN (SELECT id FROM gear)"
+    ).rowcount
+    if n:
+        print(f"  [gear] filled gear_name on {n} activities.")
+    con.commit()
 
 
 # ---------------------------------------------------------------------------
