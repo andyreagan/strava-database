@@ -87,12 +87,28 @@ Prints:
 ### Component log (chains, tires, wheelsets, …)
 
 Track swaps and wear per component. You only log *which* part went on
-*which* bike and *when* — mileage is reconstructed automatically from the
-activities table.
+*which* bike (or parent component) and *when* — mileage is reconstructed
+automatically from the activities table.
+
+Components form a hierarchy: tires and cassettes mount on a **wheelset**,
+wheelsets and chains mount on a **bike**. A component inherits miles from
+whatever its parent is mounted on. Mileage is filtered by what actually
+wears each part: `wheelset` / `tires` / `cassette` types skip VirtualRide
+miles, and a `trainer`-type component (an indoor trainer modeled as a
+wheelset) collects *only* VirtualRide miles — including for the cassette
+mounted on it.
 
 ```bash
 # Mount a component (creates it on first use via slug:type)
 uv run strava-db component install chain-a:chain firefly
+
+# Mount onto another component: tires on wheels, wheels on the bike
+uv run strava-db component install gp5k:tires enve-45 --position rear
+uv run strava-db component install enve-45:wheelset firefly
+
+# The trainer is a wheelset: it moves between bikes, owns its cassette
+uv run strava-db component install tacx-neo:trainer tarmac
+uv run strava-db component install cass-10sp:cassette tacx-neo
 
 # Swapping is implicit: installing a chain displaces the current chain
 uv run strava-db component install chain-b:chain firefly

@@ -263,11 +263,13 @@ CREATE TABLE IF NOT EXISTS components (
 CREATE TABLE IF NOT EXISTS component_installs (
     id           INTEGER PRIMARY KEY AUTOINCREMENT,
     component_id TEXT NOT NULL REFERENCES components(id),
-    gear_id      TEXT NOT NULL,  -- bike, references gear(id)
+    gear_id      TEXT,           -- bike parent (references gear(id)), or …
+    parent_component_id TEXT REFERENCES components(id),  -- … component parent
     position     TEXT,           -- optional, e.g. 'front' / 'rear'
     start_date   TEXT NOT NULL,  -- ISO date (local)
     end_date     TEXT,           -- NULL = currently installed
-    notes        TEXT
+    notes        TEXT,
+    CHECK ((gear_id IS NULL) <> (parent_component_id IS NULL))
 );
 
 CREATE TABLE IF NOT EXISTS component_measurements (
@@ -280,10 +282,34 @@ CREATE TABLE IF NOT EXISTS component_measurements (
 );
 """
 
+MIGRATE_INSTALL_PARENTS = """
+ALTER TABLE component_installs RENAME TO _ci_old;
+CREATE TABLE component_installs (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    component_id TEXT NOT NULL REFERENCES components(id),
+    gear_id      TEXT,
+    parent_component_id TEXT REFERENCES components(id),
+    position     TEXT,
+    start_date   TEXT NOT NULL,
+    end_date     TEXT,
+    notes        TEXT,
+    CHECK ((gear_id IS NULL) <> (parent_component_id IS NULL))
+);
+INSERT INTO component_installs
+    (id, component_id, gear_id, position, start_date, end_date, notes)
+    SELECT id, component_id, gear_id, position, start_date, end_date, notes
+    FROM _ci_old;
+DROP TABLE _ci_old;
+"""
+
+
 def open_db(path: str) -> sqlite3.Connection:
     con = sqlite3.connect(path)
     con.row_factory = sqlite3.Row
     con.executescript(SCHEMA)
+    cols = [r["name"] for r in con.execute("PRAGMA table_info(component_installs)")]
+    if cols and "parent_component_id" not in cols:
+        con.executescript(MIGRATE_INSTALL_PARENTS)
     con.commit()
     return con
 
@@ -786,6 +812,31 @@ def resolve_bike(con: sqlite3.Connection, s: str) -> str:
              ", ".join(f"{r['name']} ({r['id']})" for r in matches))
 
 
+# Which rides wear a component of this type: 'outdoor' excludes trainer
+# (VirtualRide) miles, 'virtual' counts only them, default is all rides.
+# Anything mounted under a 'trainer' component is forced to 'virtual'.
+SPORT_SCOPE = {
+    "wheelset": "outdoor",
+    "tires":    "outdoor",
+    "cassette": "outdoor",
+    "trainer":  "virtual",
+}
+
+
+def resolve_target(con: sqlite3.Connection, s: str):
+    """Resolve an install target: an existing component id, else a bike."""
+    row = con.execute("SELECT id FROM components WHERE id = ?",
+                      (s.lower(),)).fetchone()
+    if row:
+        return "component", row["id"]
+    return "gear", resolve_bike(con, s)
+
+
+def _component_type(con: sqlite3.Connection, comp: str) -> str:
+    return con.execute("SELECT type FROM components WHERE id=?",
+                       (comp,)).fetchone()["type"]
+
+
 def _get_component(con: sqlite3.Connection, spec: str,
                    ctype: Optional[str] = None,
                    name: Optional[str] = None) -> str:
@@ -813,7 +864,8 @@ def _close_install(con: sqlite3.Connection, install_id: int, date: str) -> None:
                 (date, install_id))
 
 
-def _open_installs(con: sqlite3.Connection, *, component_id=None, gear_id=None):
+def _open_installs(con: sqlite3.Connection, *, component_id=None, gear_id=None,
+                   parent_id=None):
     q = ("SELECT ci.*, c.type, c.name AS cname FROM component_installs ci "
          "JOIN components c ON c.id = ci.component_id WHERE ci.end_date IS NULL")
     params = []
@@ -821,29 +873,45 @@ def _open_installs(con: sqlite3.Connection, *, component_id=None, gear_id=None):
         q += " AND ci.component_id = ?"; params.append(component_id)
     if gear_id:
         q += " AND ci.gear_id = ?"; params.append(gear_id)
+    if parent_id:
+        q += " AND ci.parent_component_id = ?"; params.append(parent_id)
     return con.execute(q, params).fetchall()
 
 
-def _install(con: sqlite3.Connection, comp: str, gear_id: str, date: str,
-             position: Optional[str] = None, notes: Optional[str] = None) -> None:
-    """Mount `comp` on the bike, displacing same-type/position components."""
-    ctype = con.execute("SELECT type FROM components WHERE id=?", (comp,)
-                        ).fetchone()["type"]
+def _installs_of(con: sqlite3.Connection, comp: str):
+    return con.execute(
+        "SELECT ci.*, c.type FROM component_installs ci "
+        "JOIN components c ON c.id = ci.component_id "
+        "WHERE ci.component_id = ? ORDER BY ci.start_date", (comp,)).fetchall()
+
+
+def _mounted_on(con: sqlite3.Connection, inst) -> str:
+    return (gear_name_of(con, inst["gear_id"]) if inst["gear_id"]
+            else inst["parent_component_id"])
+
+
+def _install(con: sqlite3.Connection, comp: str, kind: str, target_id: str,
+             date: str, position: Optional[str] = None,
+             notes: Optional[str] = None) -> None:
+    """Mount `comp` on a bike or component, displacing same-type/position."""
+    ctype = _component_type(con, comp)
+    tname = gear_name_of(con, target_id) if kind == "gear" else target_id
     for inst in _open_installs(con, component_id=comp):
         _close_install(con, inst["id"], date)
-        print(f"  {comp} removed from {gear_name_of(con, inst['gear_id'])} "
-              f"as of {date}")
-    for inst in _open_installs(con, gear_id=gear_id):
+        print(f"  {comp} removed from {_mounted_on(con, inst)} as of {date}")
+    siblings = (_open_installs(con, gear_id=target_id) if kind == "gear"
+                else _open_installs(con, parent_id=target_id))
+    for inst in siblings:
         if inst["type"] == ctype and (inst["position"] or None) == (position or None):
             _close_install(con, inst["id"], date)
-            print(f"  {inst['component_id']} displaced from "
-                  f"{gear_name_of(con, gear_id)} as of {date}")
+            print(f"  {inst['component_id']} displaced from {tname} as of {date}")
     con.execute(
-        "INSERT INTO component_installs "
-        "(component_id, gear_id, position, start_date, notes) VALUES (?,?,?,?,?)",
-        (comp, gear_id, position, date, notes))
+        "INSERT INTO component_installs (component_id, gear_id, "
+        "parent_component_id, position, start_date, notes) VALUES (?,?,?,?,?,?)",
+        (comp, target_id if kind == "gear" else None,
+         target_id if kind == "component" else None, position, date, notes))
     pos = f" ({position})" if position else ""
-    print(f"  {comp}{pos} installed on {gear_name_of(con, gear_id)} as of {date}")
+    print(f"  {comp}{pos} installed on {tname} as of {date}")
 
 
 def gear_name_of(con: sqlite3.Connection, gear_id: str) -> str:
@@ -851,21 +919,63 @@ def gear_name_of(con: sqlite3.Connection, gear_id: str) -> str:
     return row["name"] if row and row["name"] else gear_id
 
 
-def _install_miles(con: sqlite3.Connection, inst) -> float:
-    """Miles ridden on the install's bike during its mount window."""
-    row = con.execute(
-        "SELECT COALESCE(SUM(distance_m),0) AS d FROM activities "
-        "WHERE gear_id = ? AND date(start_date_local) >= date(?) "
-        "AND (? IS NULL OR date(start_date_local) <= date(?))",
-        (inst["gear_id"], inst["start_date"], inst["end_date"], inst["end_date"])
-    ).fetchone()
-    return row["d"] * M_TO_MILES
+def _bike_windows(con: sqlite3.Connection, inst) -> list:
+    """
+    Resolve an install to concrete (bike, start, end, via_trainer) windows.
+    A component mounted on another component inherits that parent's bike
+    windows, intersected with its own mount dates.
+    """
+    if inst["gear_id"]:
+        return [(inst["gear_id"], inst["start_date"], inst["end_date"], False)]
+    parent = inst["parent_component_id"]
+    p_is_trainer = _component_type(con, parent) == "trainer"
+    out = []
+    for pi in _installs_of(con, parent):
+        for g, s, e, vt in _bike_windows(con, pi):
+            s2 = max(inst["start_date"], s)
+            ends = [x for x in (inst["end_date"], e) if x is not None]
+            e2 = min(ends) if ends else None
+            if e2 is None or s2 <= e2:
+                out.append((g, s2, e2, vt or p_is_trainer))
+    return out
+
+
+def _install_miles(con: sqlite3.Connection, inst,
+                   ctype: Optional[str] = None) -> float:
+    """
+    Miles this install accrued: rides on the resolved bike(s) during the
+    mount window(s), filtered by what actually wears this component type
+    (trainer rides don't wear wheels/tires/cassettes, and only trainer
+    rides wear the trainer and whatever is mounted on it).
+    """
+    ctype = ctype or _component_type(con, inst["component_id"])
+    total = 0.0
+    for g, s, e, via_trainer in _bike_windows(con, inst):
+        scope = "virtual" if via_trainer else SPORT_SCOPE.get(ctype, "all")
+        q = ("SELECT COALESCE(SUM(distance_m),0) AS d FROM activities "
+             "WHERE gear_id = ? AND date(start_date_local) >= date(?) ")
+        params = [g, s]
+        if e is not None:
+            q += "AND date(start_date_local) <= date(?) "
+            params.append(e)
+        if scope == "virtual":
+            q += "AND sport_type = 'VirtualRide' "
+        elif scope == "outdoor":
+            q += "AND sport_type <> 'VirtualRide' "
+        total += con.execute(q, params).fetchone()["d"]
+    return total * M_TO_MILES
 
 
 def _component_lifetime_miles(con: sqlite3.Connection, comp: str) -> float:
-    installs = con.execute(
-        "SELECT * FROM component_installs WHERE component_id=?", (comp,)).fetchall()
-    return sum(_install_miles(con, i) for i in installs)
+    return sum(_install_miles(con, i, i["type"]) for i in _installs_of(con, comp))
+
+
+def _current_bike(con: sqlite3.Connection, comp: str) -> Optional[str]:
+    for inst in _open_installs(con, component_id=comp):
+        if inst["gear_id"]:
+            return inst["gear_id"]
+        return _current_bike(con, inst["parent_component_id"])
+    return None
 
 
 def do_component(db_path: str, action: str, rest: list, args) -> None:
@@ -874,10 +984,14 @@ def do_component(db_path: str, action: str, rest: list, args) -> None:
 
     if action == "install":
         if len(rest) != 2:
-            sys.exit("usage: strava-db component install <component[:type]> <bike> "
-                     "[--type TYPE] [--position POS] [--date YYYY-MM-DD]")
+            sys.exit("usage: strava-db component install <component[:type]> "
+                     "<bike-or-component> [--type TYPE] [--position POS] "
+                     "[--date YYYY-MM-DD]")
         comp = _get_component(con, rest[0], ctype=args.type, name=args.name)
-        _install(con, comp, resolve_bike(con, rest[1]), date,
+        kind, target_id = resolve_target(con, rest[1])
+        if target_id == comp:
+            sys.exit(f"Cannot install {comp} on itself.")
+        _install(con, comp, kind, target_id, date,
                  position=args.position, notes=args.notes)
 
     elif action == "remove":
@@ -889,8 +1003,7 @@ def do_component(db_path: str, action: str, rest: list, args) -> None:
             sys.exit(f"{comp} is not currently installed on anything.")
         for inst in installs:
             _close_install(con, inst["id"], date)
-            print(f"  {comp} removed from {gear_name_of(con, inst['gear_id'])} "
-                  f"as of {date}")
+            print(f"  {comp} removed from {_mounted_on(con, inst)} as of {date}")
 
     elif action == "state":
         # Declare the bike's full current setup (recover from missed swaps,
@@ -911,7 +1024,7 @@ def do_component(db_path: str, action: str, rest: list, args) -> None:
             if comp in current:
                 print(f"  {comp} unchanged (on since {current[comp]['start_date']})")
             else:
-                _install(con, comp, gear_id, date)
+                _install(con, comp, "gear", gear_id, date)
 
     elif action == "measure":
         if len(rest) != 2:
@@ -927,42 +1040,69 @@ def do_component(db_path: str, action: str, rest: list, args) -> None:
               f"({miles:,.0f} lifetime mi)")
 
     elif action == "status":
-        gear_id = resolve_bike(con, rest[0]) if rest else None
-        installs = _open_installs(con, gear_id=gear_id)
-        if not installs:
+        gear_filter = resolve_bike(con, rest[0]) if rest else None
+        opens = _open_installs(con)
+        if not opens:
             print("Nothing installed. Log with: strava-db component install …")
-        by_bike: dict[str, list] = {}
-        for inst in installs:
-            by_bike.setdefault(inst["gear_id"], []).append(inst)
-        for gid, insts in by_bike.items():
+        kids: dict[str, list] = {}
+        roots: dict[str, list] = {}
+        for inst in opens:
+            if inst["gear_id"]:
+                roots.setdefault(inst["gear_id"], []).append(inst)
+            else:
+                kids.setdefault(inst["parent_component_id"], []).append(inst)
+
+        def show(inst, depth: int) -> None:
+            comp = inst["component_id"]
+            pos = f" [{inst['position']}]" if inst["position"] else ""
+            since = _install_miles(con, inst, inst["type"])
+            life = _component_lifetime_miles(con, comp)
+            m = con.execute(
+                "SELECT date, metric, value FROM component_measurements "
+                "WHERE component_id=? ORDER BY date DESC LIMIT 1",
+                (comp,)).fetchone()
+            meas = f"  last: {m['metric']}={m['value']} ({m['date']})" if m else ""
+            pad = "  " * (depth + 1)
+            print(f"{pad}{inst['type']:<9} {comp + pos:<20} "
+                  f"since {inst['start_date']}  "
+                  f"{since:7,.0f} mi install  "
+                  f"{life:7,.0f} mi lifetime{meas}")
+            for k in sorted(kids.get(comp, []), key=lambda i: i["type"]):
+                show(k, depth + 1)
+
+        for gid in sorted(roots, key=lambda g: gear_name_of(con, g)):
+            if gear_filter and gid != gear_filter:
+                continue
             print(f"\n{gear_name_of(con, gid)} ({gid})")
-            for inst in sorted(insts, key=lambda i: i["type"]):
-                comp = inst["component_id"]
-                since = _install_miles(con, inst)
-                life = _component_lifetime_miles(con, comp)
-                pos = f" [{inst['position']}]" if inst["position"] else ""
-                m = con.execute(
-                    "SELECT date, metric, value FROM component_measurements "
-                    "WHERE component_id=? ORDER BY date DESC LIMIT 1",
-                    (comp,)).fetchone()
-                meas = f"  last: {m['metric']}={m['value']} ({m['date']})" if m else ""
-                print(f"  {inst['type']:<9} {comp + pos:<16} "
-                      f"on since {inst['start_date']}  "
-                      f"{since:7,.0f} mi this install  "
-                      f"{life:7,.0f} mi lifetime{meas}")
+            for inst in sorted(roots[gid], key=lambda i: i["type"]):
+                show(inst, 0)
+
+        if not gear_filter:
+            open_ids = {i["component_id"] for i in opens}
+            parked = [p for p in kids if p not in open_ids]
+            if parked:
+                print("\nNot currently mounted:")
+                for p in sorted(parked):
+                    last = con.execute(
+                        "SELECT * FROM component_installs WHERE component_id=? "
+                        "AND gear_id IS NOT NULL ORDER BY end_date DESC LIMIT 1",
+                        (p,)).fetchone()
+                    where = (f" — last on {gear_name_of(con, last['gear_id'])} "
+                             f"until {last['end_date']}" if last else "")
+                    print(f"  {_component_type(con, p):<9} {p}{where}")
+                    for k in sorted(kids[p], key=lambda i: i["type"]):
+                        show(k, 1)
 
     elif action == "history":
         if len(rest) != 1:
             sys.exit("usage: strava-db component history <component>")
         comp = _get_component(con, rest[0])
         print(f"{comp} — installs:")
-        for inst in con.execute(
-                "SELECT * FROM component_installs WHERE component_id=? "
-                "ORDER BY start_date", (comp,)):
+        for inst in _installs_of(con, comp):
             end = inst["end_date"] or "now"
             print(f"  {inst['start_date']} → {end:<10}  "
-                  f"{gear_name_of(con, inst['gear_id']):<20} "
-                  f"{_install_miles(con, inst):7,.0f} mi")
+                  f"{_mounted_on(con, inst):<20} "
+                  f"{_install_miles(con, inst, inst['type']):7,.0f} mi")
         rows = con.execute(
             "SELECT * FROM component_measurements WHERE component_id=? "
             "ORDER BY date", (comp,)).fetchall()
