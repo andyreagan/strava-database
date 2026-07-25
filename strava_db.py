@@ -251,6 +251,33 @@ CREATE TABLE IF NOT EXISTS meta (
     key     TEXT PRIMARY KEY,
     value   TEXT
 );
+
+CREATE TABLE IF NOT EXISTS components (
+    id      TEXT PRIMARY KEY,   -- short slug, e.g. 'chain-a', 'zipp-303'
+    type    TEXT NOT NULL,      -- chain | cassette | tires | wheelset | …
+    name    TEXT,               -- free-form description
+    notes   TEXT,
+    created TEXT
+);
+
+CREATE TABLE IF NOT EXISTS component_installs (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    component_id TEXT NOT NULL REFERENCES components(id),
+    gear_id      TEXT NOT NULL,  -- bike, references gear(id)
+    position     TEXT,           -- optional, e.g. 'front' / 'rear'
+    start_date   TEXT NOT NULL,  -- ISO date (local)
+    end_date     TEXT,           -- NULL = currently installed
+    notes        TEXT
+);
+
+CREATE TABLE IF NOT EXISTS component_measurements (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    component_id TEXT NOT NULL REFERENCES components(id),
+    date         TEXT NOT NULL,
+    metric       TEXT NOT NULL,  -- e.g. 'wear-mm', 'tread-mm'
+    value        REAL NOT NULL,
+    notes        TEXT
+);
 """
 
 def open_db(path: str) -> sqlite3.Connection:
@@ -734,6 +761,225 @@ def do_backfill_detail(client: StravaClient, db_path: str,
 
 
 # ---------------------------------------------------------------------------
+# Component log — swaps, state snapshots, and wear measurements
+# ---------------------------------------------------------------------------
+
+def _today() -> str:
+    return datetime.now().date().isoformat()
+
+
+def resolve_bike(con: sqlite3.Connection, s: str) -> str:
+    """Resolve a bike by gear id ('b…') or case-insensitive name substring."""
+    row = con.execute("SELECT id FROM gear WHERE id = ?", (s,)).fetchone()
+    if row:
+        return row["id"]
+    matches = con.execute(
+        "SELECT id, name FROM gear WHERE id LIKE 'b%' AND name LIKE ?",
+        (f"%{s}%",)).fetchall()
+    if len(matches) == 1:
+        return matches[0]["id"]
+    if not matches:
+        sys.exit(f"No bike matching '{s}'. Known bikes:\n" + "\n".join(
+            f"  {r['id']}  {r['name']}" for r in
+            con.execute("SELECT id, name FROM gear WHERE id LIKE 'b%'")))
+    sys.exit(f"Ambiguous bike '{s}': " +
+             ", ".join(f"{r['name']} ({r['id']})" for r in matches))
+
+
+def _get_component(con: sqlite3.Connection, spec: str,
+                   ctype: Optional[str] = None,
+                   name: Optional[str] = None) -> str:
+    """
+    Fetch or create a component.  `spec` is a slug, optionally 'slug:type'
+    to create on the fly (e.g. 'nx-chain:chain').
+    """
+    slug, _, inline_type = spec.partition(":")
+    slug = slug.lower()
+    ctype = inline_type or ctype
+    row = con.execute("SELECT id FROM components WHERE id = ?", (slug,)).fetchone()
+    if row:
+        return slug
+    if not ctype:
+        sys.exit(f"Unknown component '{slug}'. Create it by giving a type: "
+                 f"'{slug}:chain' or --type chain")
+    con.execute("INSERT INTO components (id, type, name, created) VALUES (?,?,?,?)",
+                (slug, ctype, name, _today()))
+    print(f"  created component '{slug}' (type: {ctype})")
+    return slug
+
+
+def _close_install(con: sqlite3.Connection, install_id: int, date: str) -> None:
+    con.execute("UPDATE component_installs SET end_date=? WHERE id=?",
+                (date, install_id))
+
+
+def _open_installs(con: sqlite3.Connection, *, component_id=None, gear_id=None):
+    q = ("SELECT ci.*, c.type, c.name AS cname FROM component_installs ci "
+         "JOIN components c ON c.id = ci.component_id WHERE ci.end_date IS NULL")
+    params = []
+    if component_id:
+        q += " AND ci.component_id = ?"; params.append(component_id)
+    if gear_id:
+        q += " AND ci.gear_id = ?"; params.append(gear_id)
+    return con.execute(q, params).fetchall()
+
+
+def _install(con: sqlite3.Connection, comp: str, gear_id: str, date: str,
+             position: Optional[str] = None, notes: Optional[str] = None) -> None:
+    """Mount `comp` on the bike, displacing same-type/position components."""
+    ctype = con.execute("SELECT type FROM components WHERE id=?", (comp,)
+                        ).fetchone()["type"]
+    for inst in _open_installs(con, component_id=comp):
+        _close_install(con, inst["id"], date)
+        print(f"  {comp} removed from {gear_name_of(con, inst['gear_id'])} "
+              f"as of {date}")
+    for inst in _open_installs(con, gear_id=gear_id):
+        if inst["type"] == ctype and (inst["position"] or None) == (position or None):
+            _close_install(con, inst["id"], date)
+            print(f"  {inst['component_id']} displaced from "
+                  f"{gear_name_of(con, gear_id)} as of {date}")
+    con.execute(
+        "INSERT INTO component_installs "
+        "(component_id, gear_id, position, start_date, notes) VALUES (?,?,?,?,?)",
+        (comp, gear_id, position, date, notes))
+    pos = f" ({position})" if position else ""
+    print(f"  {comp}{pos} installed on {gear_name_of(con, gear_id)} as of {date}")
+
+
+def gear_name_of(con: sqlite3.Connection, gear_id: str) -> str:
+    row = con.execute("SELECT name FROM gear WHERE id=?", (gear_id,)).fetchone()
+    return row["name"] if row and row["name"] else gear_id
+
+
+def _install_miles(con: sqlite3.Connection, inst) -> float:
+    """Miles ridden on the install's bike during its mount window."""
+    row = con.execute(
+        "SELECT COALESCE(SUM(distance_m),0) AS d FROM activities "
+        "WHERE gear_id = ? AND date(start_date_local) >= date(?) "
+        "AND (? IS NULL OR date(start_date_local) <= date(?))",
+        (inst["gear_id"], inst["start_date"], inst["end_date"], inst["end_date"])
+    ).fetchone()
+    return row["d"] * M_TO_MILES
+
+
+def _component_lifetime_miles(con: sqlite3.Connection, comp: str) -> float:
+    installs = con.execute(
+        "SELECT * FROM component_installs WHERE component_id=?", (comp,)).fetchall()
+    return sum(_install_miles(con, i) for i in installs)
+
+
+def do_component(db_path: str, action: str, rest: list, args) -> None:
+    con = open_db(db_path)
+    date = args.date or _today()
+
+    if action == "install":
+        if len(rest) != 2:
+            sys.exit("usage: strava-db component install <component[:type]> <bike> "
+                     "[--type TYPE] [--position POS] [--date YYYY-MM-DD]")
+        comp = _get_component(con, rest[0], ctype=args.type, name=args.name)
+        _install(con, comp, resolve_bike(con, rest[1]), date,
+                 position=args.position, notes=args.notes)
+
+    elif action == "remove":
+        if len(rest) != 1:
+            sys.exit("usage: strava-db component remove <component> [--date …]")
+        comp = _get_component(con, rest[0])
+        installs = _open_installs(con, component_id=comp)
+        if not installs:
+            sys.exit(f"{comp} is not currently installed on anything.")
+        for inst in installs:
+            _close_install(con, inst["id"], date)
+            print(f"  {comp} removed from {gear_name_of(con, inst['gear_id'])} "
+                  f"as of {date}")
+
+    elif action == "state":
+        # Declare the bike's full current setup (recover from missed swaps,
+        # or seed a new bike's stock build).  Declared components already on
+        # the bike are left untouched; others are (re)installed; open installs
+        # on the bike NOT in the list are closed.
+        if len(rest) < 2:
+            sys.exit("usage: strava-db component state <bike> <comp[:type]> … "
+                     "[--date YYYY-MM-DD]")
+        gear_id = resolve_bike(con, rest[0])
+        comps = [_get_component(con, spec, ctype=args.type) for spec in rest[1:]]
+        current = {i["component_id"]: i for i in _open_installs(con, gear_id=gear_id)}
+        for stale in set(current) - set(comps):
+            _close_install(con, current[stale]["id"], date)
+            print(f"  {stale} removed from {gear_name_of(con, gear_id)} "
+                  f"as of {date}")
+        for comp in comps:
+            if comp in current:
+                print(f"  {comp} unchanged (on since {current[comp]['start_date']})")
+            else:
+                _install(con, comp, gear_id, date)
+
+    elif action == "measure":
+        if len(rest) != 2:
+            sys.exit("usage: strava-db component measure <component> <value> "
+                     "[--metric wear-mm] [--date …] [--notes …]")
+        comp = _get_component(con, rest[0])
+        con.execute(
+            "INSERT INTO component_measurements "
+            "(component_id, date, metric, value, notes) VALUES (?,?,?,?,?)",
+            (comp, date, args.metric, float(rest[1]), args.notes))
+        miles = _component_lifetime_miles(con, comp)
+        print(f"  {comp}: {args.metric} = {rest[1]} on {date} "
+              f"({miles:,.0f} lifetime mi)")
+
+    elif action == "status":
+        gear_id = resolve_bike(con, rest[0]) if rest else None
+        installs = _open_installs(con, gear_id=gear_id)
+        if not installs:
+            print("Nothing installed. Log with: strava-db component install …")
+        by_bike: dict[str, list] = {}
+        for inst in installs:
+            by_bike.setdefault(inst["gear_id"], []).append(inst)
+        for gid, insts in by_bike.items():
+            print(f"\n{gear_name_of(con, gid)} ({gid})")
+            for inst in sorted(insts, key=lambda i: i["type"]):
+                comp = inst["component_id"]
+                since = _install_miles(con, inst)
+                life = _component_lifetime_miles(con, comp)
+                pos = f" [{inst['position']}]" if inst["position"] else ""
+                m = con.execute(
+                    "SELECT date, metric, value FROM component_measurements "
+                    "WHERE component_id=? ORDER BY date DESC LIMIT 1",
+                    (comp,)).fetchone()
+                meas = f"  last: {m['metric']}={m['value']} ({m['date']})" if m else ""
+                print(f"  {inst['type']:<9} {comp + pos:<16} "
+                      f"on since {inst['start_date']}  "
+                      f"{since:7,.0f} mi this install  "
+                      f"{life:7,.0f} mi lifetime{meas}")
+
+    elif action == "history":
+        if len(rest) != 1:
+            sys.exit("usage: strava-db component history <component>")
+        comp = _get_component(con, rest[0])
+        print(f"{comp} — installs:")
+        for inst in con.execute(
+                "SELECT * FROM component_installs WHERE component_id=? "
+                "ORDER BY start_date", (comp,)):
+            end = inst["end_date"] or "now"
+            print(f"  {inst['start_date']} → {end:<10}  "
+                  f"{gear_name_of(con, inst['gear_id']):<20} "
+                  f"{_install_miles(con, inst):7,.0f} mi")
+        rows = con.execute(
+            "SELECT * FROM component_measurements WHERE component_id=? "
+            "ORDER BY date", (comp,)).fetchall()
+        if rows:
+            print(f"{comp} — measurements:")
+            for m in rows:
+                notes = f"  ({m['notes']})" if m["notes"] else ""
+                print(f"  {m['date']}  {m['metric']} = {m['value']}{notes}")
+
+    else:
+        sys.exit(f"Unknown component action '{action}'. "
+                 "Use: install | remove | state | measure | status | history")
+
+    con.commit()
+
+
+# ---------------------------------------------------------------------------
 # Stats / reporting
 # ---------------------------------------------------------------------------
 
@@ -898,10 +1144,15 @@ def main() -> None:
     )
     parser.add_argument("mode", choices=["build-archive", "build-api",
                                          "update", "stats",
-                                         "backfill-detail"],
+                                         "backfill-detail", "component"],
                         help="Operation to perform")
     parser.add_argument("archive", nargs="?",
-                        help="(build-archive only) Path to Strava export ZIP")
+                        help="(build-archive) Path to Strava export ZIP; "
+                             "(component) action: install | remove | state | "
+                             "measure | status | history")
+    parser.add_argument("rest", nargs="*",
+                        help="(component) action arguments, e.g. component "
+                             "slug and bike")
     parser.add_argument("--db", default=None,
                         help="Override DB_PATH from .env")
     parser.add_argument("--verify-days", type=int, default=30,
@@ -912,6 +1163,19 @@ def main() -> None:
                              "e.g. --sport-types Run Ride")
     parser.add_argument("--env", default=".env",
                         help="Path to .env file (default: .env)")
+    parser.add_argument("--date", default=None, metavar="YYYY-MM-DD",
+                        help="(component) Effective date (default: today)")
+    parser.add_argument("--type", default=None,
+                        help="(component install/state) Type for a new "
+                             "component: chain, cassette, tires, wheelset, …")
+    parser.add_argument("--position", default=None,
+                        help="(component install) e.g. front / rear")
+    parser.add_argument("--name", default=None,
+                        help="(component install) Free-form description")
+    parser.add_argument("--metric", default="wear-mm",
+                        help="(component measure) Metric name (default: wear-mm)")
+    parser.add_argument("--notes", default=None,
+                        help="(component) Free-form notes on the event")
     args = parser.parse_args()
 
     env_path = Path(args.env)
@@ -939,6 +1203,12 @@ def main() -> None:
 
     elif args.mode == "stats":
         do_stats(db_path)
+
+    elif args.mode == "component":
+        if not args.archive:
+            parser.error("component requires an action: install | remove | "
+                         "state | measure | status | history")
+        do_component(db_path, args.archive, args.rest, args)
 
 
 if __name__ == "__main__":

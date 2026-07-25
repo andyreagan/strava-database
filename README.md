@@ -84,6 +84,37 @@ Prints:
 - **Weekly workout time** (all types, last 12 weeks)
 - **Commute rides** by year
 
+### Component log (chains, tires, wheelsets, …)
+
+Track swaps and wear per component. You only log *which* part went on
+*which* bike and *when* — mileage is reconstructed automatically from the
+activities table.
+
+```bash
+# Mount a component (creates it on first use via slug:type)
+uv run strava-db component install chain-a:chain firefly
+
+# Swapping is implicit: installing a chain displaces the current chain
+uv run strava-db component install chain-b:chain firefly
+
+# Declare a bike's full setup (seed a new bike, or recover a missed swap)
+uv run strava-db component state turbo nx-chain:chain pg1210:cassette \
+    dt-g540:wheelset tracer-pro:tires --date 2026-07-08
+
+# Log a wear measurement
+uv run strava-db component measure chain-a 0.32 --notes "pre-wax"
+
+# What's on each bike, with miles per install and lifetime
+uv run strava-db component status
+
+# One component's full install + measurement history
+uv run strava-db component history chain-a
+```
+
+Bikes can be referenced by gear id (`b12345`) or any unique name
+substring (`firefly`). Backdate any event with `--date YYYY-MM-DD`; use
+`--position front` when two of the same type live on one bike.
+
 ---
 
 ## Common options
