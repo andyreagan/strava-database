@@ -794,6 +794,10 @@ def _today() -> str:
     return datetime.now().date().isoformat()
 
 
+def _now() -> str:
+    return datetime.now().isoformat(timespec="minutes")
+
+
 def resolve_bike(con: sqlite3.Connection, s: str) -> str:
     """Resolve a bike by gear id ('b…') or case-insensitive name substring."""
     row = con.execute("SELECT id FROM gear WHERE id = ?", (s,)).fetchone()
@@ -935,7 +939,7 @@ def _bike_windows(con: sqlite3.Connection, inst) -> list:
             s2 = max(inst["start_date"], s)
             ends = [x for x in (inst["end_date"], e) if x is not None]
             e2 = min(ends) if ends else None
-            if e2 is None or s2 <= e2:
+            if e2 is None or s2 < e2:
                 out.append((g, s2, e2, vt or p_is_trainer))
     return out
 
@@ -952,11 +956,13 @@ def _install_miles(con: sqlite3.Connection, inst,
     total = 0.0
     for g, s, e, via_trainer in _bike_windows(con, inst):
         scope = "virtual" if via_trainer else SPORT_SCOPE.get(ctype, "all")
+        # Half-open window [on, off): a date-only boundary means midnight,
+        # so contiguous installs never double-count a swap-day ride.
         q = ("SELECT COALESCE(SUM(distance_m),0) AS d FROM activities "
-             "WHERE gear_id = ? AND date(start_date_local) >= date(?) ")
+             "WHERE gear_id = ? AND datetime(start_date_local) >= datetime(?) ")
         params = [g, s]
         if e is not None:
-            q += "AND date(start_date_local) <= date(?) "
+            q += "AND datetime(start_date_local) < datetime(?) "
             params.append(e)
         if scope == "virtual":
             q += "AND sport_type = 'VirtualRide' "
@@ -980,7 +986,10 @@ def _current_bike(con: sqlite3.Connection, comp: str) -> Optional[str]:
 
 def do_component(db_path: str, action: str, rest: list, args) -> None:
     con = open_db(db_path)
-    date = args.date or _today()
+    # Boundaries are timestamps: default is now-with-time, so a swap logged
+    # between two same-day rides attributes each ride correctly. A date-only
+    # value means midnight (start of that day).
+    date = (args.date or _now()).replace(" ", "T")
 
     if action == "install":
         if len(rest) != 2:
@@ -1273,12 +1282,12 @@ def do_tui(db_path: str) -> None:
                         for p in parents if p["type"] in ("wheelset", "trainer")]
                     target = _choose("Mount where?", target_opts)
                     pos = _ask("Position (blank / front / rear)")
-                    date = _ask("Date", _today())
+                    date = _ask("Date/time", _now())
                     _run_cli(db_path, "install", [spec, target],
                              _cli_args(date=date, position=pos or None))
                 elif act == "remove":
                     comp = _choose("Remove which part?", comp_opts)
-                    date = _ask("Date", _today())
+                    date = _ask("Date/time", _now())
                     _run_cli(db_path, "remove", [comp], _cli_args(date=date))
                 elif act == "measure":
                     comp = _choose("Measure which part?", comp_opts)

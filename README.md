@@ -137,8 +137,14 @@ command before running it, so the flat commands stay learnable (and
 remain the stable interface for scripts and agents).
 
 Bikes can be referenced by gear id (`b12345`) or any unique name
-substring (`firefly`). Backdate any event with `--date YYYY-MM-DD`; use
-`--position front` when two of the same type live on one bike.
+substring (`firefly`). Use `--position front` when two of the same type
+live on one bike.
+
+Install windows are half-open `[on, off)` timestamps compared against
+each ride's start time. Events default to *now* (with time), so logging
+a swap at the workstand between two same-day rides attributes each ride
+to the right part. Backdate with `--date 2026-07-28` (midnight) or
+`--date "2026-07-28 07:30"` for a specific time.
 
 ---
 
