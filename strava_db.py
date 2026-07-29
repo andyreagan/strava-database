@@ -1093,6 +1093,58 @@ def do_component(db_path: str, action: str, rest: list, args) -> None:
                     for k in sorted(kids[p], key=lambda i: i["type"]):
                         show(k, 1)
 
+    elif action == "inventory":
+        rows = con.execute(
+            "SELECT id, type, name FROM components ORDER BY type, id").fetchall()
+        if not rows:
+            print("No components yet. Log with: strava-db component install …")
+        mounted, parked, retired = [], [], []
+        for c in rows:
+            comp = c["id"]
+            life = _component_lifetime_miles(con, comp)
+            m = con.execute(
+                "SELECT date, metric, value FROM component_measurements "
+                "WHERE component_id=? ORDER BY date DESC LIMIT 1",
+                (comp,)).fetchone()
+            meas = f"  last: {m['metric']}={m['value']} ({m['date']})" if m else ""
+            opens = _open_installs(con, component_id=comp)
+            if opens:
+                inst = opens[0]
+                path, cur, on_bike = [], inst, False
+                while True:
+                    if cur["gear_id"]:
+                        path.append(gear_name_of(con, cur["gear_id"]))
+                        on_bike = True
+                        break
+                    path.append(cur["parent_component_id"])
+                    up = _open_installs(con,
+                                        component_id=cur["parent_component_id"])
+                    if not up:
+                        break
+                    cur = up[0]
+                pos = f" [{inst['position']}]" if inst["position"] else ""
+                entry = (f"  {c['type']:<9} {comp + pos:<22} on "
+                         f"{' → '.join(path):<32} since {inst['start_date']}  "
+                         f"{life:7,.0f} mi{meas}")
+                (mounted if on_bike else parked).append(entry)
+            else:
+                last = con.execute(
+                    "SELECT * FROM component_installs WHERE component_id=? "
+                    "ORDER BY COALESCE(end_date, start_date) DESC LIMIT 1",
+                    (comp,)).fetchone()
+                where = (f"last on {_mounted_on(con, last)} "
+                         f"until {last['end_date'] or '?'}" if last
+                         else "never installed")
+                retired.append(f"  {c['type']:<9} {comp:<22} {where:<40} "
+                               f"{life:7,.0f} mi{meas}")
+        for title, entries in (("Mounted:", mounted),
+                               ("Parked (on an unmounted parent):", parked),
+                               ("Retired / off:", retired)):
+            if entries:
+                print(f"\n{title}")
+                for e in entries:
+                    print(e)
+
     elif action == "history":
         if len(rest) != 1:
             sys.exit("usage: strava-db component history <component>")
@@ -1113,10 +1165,136 @@ def do_component(db_path: str, action: str, rest: list, args) -> None:
                 print(f"  {m['date']}  {m['metric']} = {m['value']}{notes}")
 
     else:
-        sys.exit(f"Unknown component action '{action}'. "
-                 "Use: install | remove | state | measure | status | history")
+        sys.exit(f"Unknown component action '{action}'. Use: install | remove "
+                 "| state | measure | status | inventory | history")
 
     con.commit()
+
+
+# ---------------------------------------------------------------------------
+# Interactive TUI — same operations, menu-driven; echoes the pure-CLI
+# equivalent of every action so the commands stay learnable.
+# ---------------------------------------------------------------------------
+
+def _cli_args(**kw) -> argparse.Namespace:
+    base = dict(date=None, type=None, position=None, name=None,
+                metric="wear-mm", notes=None)
+    base.update(kw)
+    return argparse.Namespace(**base)
+
+
+def _choose(prompt: str, options: list):
+    """Numbered menu. `options` is a list of (label, value)."""
+    print(f"\n{prompt}")
+    for i, (label, _) in enumerate(options, 1):
+        print(f"  {i}) {label}")
+    while True:
+        raw = input("> [1] ").strip()
+        if not raw:
+            return options[0][1]
+        if raw.isdigit() and 1 <= int(raw) <= len(options):
+            return options[int(raw) - 1][1]
+        print("  pick a number from the list")
+
+
+def _ask(prompt: str, default: str = "") -> str:
+    raw = input(f"{prompt} [{default}] ").strip()
+    return raw or default
+
+
+def _run_cli(db_path: str, action: str, rest: list, args) -> None:
+    """Echo the pure-CLI equivalent, then run it (errors don't kill the TUI)."""
+    cmd = f"uv run strava-db component {action} " + " ".join(rest)
+    for flag in ("date", "position", "type", "metric", "notes", "name"):
+        v = getattr(args, flag, None)
+        if v and not (flag == "metric" and v == "wear-mm"):
+            cmd += f" --{flag} \"{v}\"" if " " in str(v) else f" --{flag} {v}"
+    print(f"\n  $ {cmd}")
+    try:
+        do_component(db_path, action, rest, args)
+    except SystemExit as e:
+        print(f"  (error: {e})")
+
+
+def do_tui(db_path: str) -> None:
+    con = open_db(db_path)
+    bikes = con.execute(
+        "SELECT g.id, g.name FROM gear g "
+        "JOIN (SELECT gear_id, MAX(start_date_local) AS md FROM activities "
+        "      GROUP BY gear_id) a ON a.gear_id = g.id "
+        "WHERE g.id LIKE 'b%' AND g.name IS NOT NULL "
+        "ORDER BY a.md DESC").fetchall()
+    try:
+        while True:
+            bike = _choose("Which bike?",
+                           [(r["name"], r["id"]) for r in bikes] +
+                           [("(full gear inventory)", "__inv__"), ("(quit)", None)])
+            if bike is None:
+                return
+            if bike == "__inv__":
+                _run_cli(db_path, "inventory", [], _cli_args())
+                continue
+            _run_cli(db_path, "status", [bike], _cli_args())
+            while True:
+                act = _choose("Action?", [
+                    ("Install / swap a part", "install"),
+                    ("Remove a part", "remove"),
+                    ("Log a wear measurement", "measure"),
+                    ("Part history", "history"),
+                    ("Show status again", "status"),
+                    ("Switch bike", "back"),
+                    ("Quit", "quit"),
+                ])
+                if act == "back":
+                    break
+                if act == "quit":
+                    return
+                if act == "status":
+                    _run_cli(db_path, "status", [bike], _cli_args())
+                    continue
+
+                comps = con.execute(
+                    "SELECT id, type FROM components ORDER BY type, id").fetchall()
+                comp_opts = [(f"{r['type']:<9} {r['id']}", r["id"]) for r in comps]
+
+                if act == "install":
+                    spec = _choose("Which part?",
+                                   [("(new part…)", "__new__")] + comp_opts)
+                    if spec == "__new__":
+                        slug = _ask("New part slug (e.g. chain-b)")
+                        if not slug:
+                            continue
+                        ctype = _ask("Type (chain/cassette/tires/wheelset/trainer/…)",
+                                     "chain")
+                        spec = f"{slug}:{ctype}"
+                    parents = _open_installs(con, gear_id=bike)
+                    target_opts = [(f"the bike itself", bike)] + [
+                        (f"{p['type']:<9} {p['component_id']}", p["component_id"])
+                        for p in parents if p["type"] in ("wheelset", "trainer")]
+                    target = _choose("Mount where?", target_opts)
+                    pos = _ask("Position (blank / front / rear)")
+                    date = _ask("Date", _today())
+                    _run_cli(db_path, "install", [spec, target],
+                             _cli_args(date=date, position=pos or None))
+                elif act == "remove":
+                    comp = _choose("Remove which part?", comp_opts)
+                    date = _ask("Date", _today())
+                    _run_cli(db_path, "remove", [comp], _cli_args(date=date))
+                elif act == "measure":
+                    comp = _choose("Measure which part?", comp_opts)
+                    value = _ask("Value (e.g. 0.32)")
+                    if not value:
+                        continue
+                    metric = _ask("Metric", "wear-mm")
+                    notes = _ask("Notes")
+                    _run_cli(db_path, "measure", [comp, value],
+                             _cli_args(metric=metric, notes=notes or None))
+                elif act == "history":
+                    comp = _choose("History of which part?", comp_opts)
+                    _run_cli(db_path, "history", [comp], _cli_args())
+    except (EOFError, KeyboardInterrupt):
+        print()
+        return
 
 
 # ---------------------------------------------------------------------------
@@ -1284,12 +1462,14 @@ def main() -> None:
     )
     parser.add_argument("mode", choices=["build-archive", "build-api",
                                          "update", "stats",
-                                         "backfill-detail", "component"],
+                                         "backfill-detail", "component",
+                                         "status", "tui"],
                         help="Operation to perform")
     parser.add_argument("archive", nargs="?",
                         help="(build-archive) Path to Strava export ZIP; "
                              "(component) action: install | remove | state | "
-                             "measure | status | history")
+                             "measure | status | inventory | history; "
+                             "(status) optional bike")
     parser.add_argument("rest", nargs="*",
                         help="(component) action arguments, e.g. component "
                              "slug and bike")
@@ -1347,8 +1527,15 @@ def main() -> None:
     elif args.mode == "component":
         if not args.archive:
             parser.error("component requires an action: install | remove | "
-                         "state | measure | status | history")
+                         "state | measure | status | inventory | history")
         do_component(db_path, args.archive, args.rest, args)
+
+    elif args.mode == "status":
+        do_component(db_path, "status",
+                     [args.archive] if args.archive else [], args)
+
+    elif args.mode == "tui":
+        do_tui(db_path)
 
 
 if __name__ == "__main__":

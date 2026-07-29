@@ -121,11 +121,20 @@ uv run strava-db component state turbo nx-chain:chain pg1210:cassette \
 uv run strava-db component measure chain-a 0.32 --notes "pre-wax"
 
 # What's on each bike, with miles per install and lifetime
-uv run strava-db component status
+uv run strava-db component status          # all bikes
+uv run strava-db status firefly            # shortcut, one bike
+
+# Every component you own: mounted / parked / retired, with miles
+uv run strava-db component inventory
 
 # One component's full install + measurement history
 uv run strava-db component history chain-a
 ```
+
+Can't remember any of that? `uv run strava-db tui` walks you through the
+same operations with numbered menus — and prints the equivalent CLI
+command before running it, so the flat commands stay learnable (and
+remain the stable interface for scripts and agents).
 
 Bikes can be referenced by gear id (`b12345`) or any unique name
 substring (`firefly`). Backdate any event with `--date YYYY-MM-DD`; use
