@@ -129,7 +129,15 @@ uv run strava-db component inventory
 
 # One component's full install + measurement history
 uv run strava-db component history chain-a
+
+# Org tables (current setup + past parts) for the bike's page in ~/brain
+uv run strava-db component org firefly
 ```
+
+The bike pages in `~/brain` (`firefly1169.org`, `tarmacSL3.org`, …) call
+`component org` from a `:eval yes :exports results` babel block, and the
+blog build re-runs those blocks on every publish (`deploy/blog.el`), so the
+site shows current mileage and parts without hand-refreshing.
 
 Can't remember any of that? `uv run strava-db tui` walks you through the
 same operations with numbered menus — and prints the equivalent CLI

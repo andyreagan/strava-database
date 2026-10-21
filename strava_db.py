@@ -945,16 +945,20 @@ def _bike_windows(con: sqlite3.Connection, inst) -> list:
 
 
 def _install_miles(con: sqlite3.Connection, inst,
-                   ctype: Optional[str] = None) -> float:
+                   ctype: Optional[str] = None,
+                   gear_id: Optional[str] = None) -> float:
     """
     Miles this install accrued: rides on the resolved bike(s) during the
     mount window(s), filtered by what actually wears this component type
     (trainer rides don't wear wheels/tires/cassettes, and only trainer
-    rides wear the trainer and whatever is mounted on it).
+    rides wear the trainer and whatever is mounted on it). With `gear_id`,
+    only rides on that bike count.
     """
     ctype = ctype or _component_type(con, inst["component_id"])
     total = 0.0
     for g, s, e, via_trainer in _bike_windows(con, inst):
+        if gear_id and g != gear_id:
+            continue
         scope = "virtual" if via_trainer else SPORT_SCOPE.get(ctype, "all")
         # Half-open window [on, off): a date-only boundary means midnight,
         # so contiguous installs never double-count a swap-day ride.
@@ -1173,9 +1177,84 @@ def do_component(db_path: str, action: str, rest: list, args) -> None:
                 notes = f"  ({m['notes']})" if m["notes"] else ""
                 print(f"  {m['date']}  {m['metric']} = {m['value']}{notes}")
 
+    elif action == "org":
+        # Org-mode tables for a bike's page in ~/brain: the current setup
+        # (nested parts indented under their parent) and every part that
+        # has come off it. Evaluated by the blog build, see firefly1169.org.
+        if len(rest) != 1:
+            sys.exit("usage: strava-db component org <bike>")
+        gear_id = resolve_bike(con, rest[0])
+
+        def last_meas(comp: str) -> str:
+            m = con.execute(
+                "SELECT date, metric, value FROM component_measurements "
+                "WHERE component_id=? ORDER BY date DESC LIMIT 1",
+                (comp,)).fetchone()
+            return f"{m['metric']} {m['value']:g} ({m['date'][:10]})" if m else ""
+
+        def label(inst) -> str:
+            c = con.execute("SELECT name FROM components WHERE id=?",
+                            (inst["component_id"],)).fetchone()
+            pos = f" ({inst['position']})" if inst["position"] else ""
+            return (c["name"] or inst["component_id"]) + pos
+
+        rows = []
+
+        def walk(inst, depth: int) -> None:
+            comp = inst["component_id"]
+            rows.append((("↳ " * depth) + inst["type"], label(inst),
+                         inst["start_date"][:10],
+                         _install_miles(con, inst, inst["type"], gear_id),
+                         _component_lifetime_miles(con, comp), last_meas(comp)))
+            for k in sorted(_open_installs(con, parent_id=comp),
+                            key=lambda i: i["type"]):
+                walk(k, depth + 1)
+
+        for inst in sorted(_open_installs(con, gear_id=gear_id),
+                           key=lambda i: i["type"]):
+            walk(inst, 0)
+
+        print(f"Current setup on {gear_name_of(con, gear_id)}, "
+              f"as of {_today()}:\n")
+        if rows:
+            measured = any(r[5] for r in rows)
+            print("| Part | Component | Since | Miles here | Lifetime miles |"
+                  + (" Last measured |" if measured else ""))
+            print("|-")
+            for r in rows:
+                print(f"| {r[0]} | {r[1]} | {r[2]} | {r[3]:.0f} | {r[4]:.0f} |"
+                      + (f" {r[5]} |" if measured else ""))
+        else:
+            print("No components logged.")
+
+        past = []
+        for inst in con.execute(
+                "SELECT ci.*, c.type FROM component_installs ci "
+                "JOIN components c ON c.id = ci.component_id "
+                "WHERE ci.end_date IS NOT NULL ORDER BY ci.start_date").fetchall():
+            # On/off are when it was on *this* bike: a part riding on a
+            # trainer or wheelset that moved between bikes has one window each.
+            wins = [(s, e) for g, s, e, _ in _bike_windows(con, inst)
+                    if g == gear_id]
+            if wins:
+                ends = [e for _, e in wins]
+                off = None if None in ends else max(ends)
+                past.append((inst["type"], label(inst),
+                             min(s for s, _ in wins)[:10],
+                             off[:10] if off else "",
+                             _install_miles(con, inst, inst["type"], gear_id),
+                             _component_lifetime_miles(con, inst["component_id"])))
+        if past:
+            print("\nPast components:\n")
+            print("| Part | Component | On | Off | Miles here | Lifetime miles |")
+            print("|-")
+            for r in past:
+                print(f"| {r[0]} | {r[1]} | {r[2]} | {r[3]} | {r[4]:.0f} "
+                      f"| {r[5]:.0f} |")
+
     else:
         sys.exit(f"Unknown component action '{action}'. Use: install | remove "
-                 "| state | measure | status | inventory | history")
+                 "| state | measure | status | inventory | history | org")
 
     con.commit()
 
