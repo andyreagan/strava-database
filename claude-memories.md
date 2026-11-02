@@ -26,6 +26,11 @@ Strava gear ids are the ones in `strava.db`.
   2026-03-29 blowout). Maintenance log: `~/brain/firefly1169.org`.
 - **Mean Machine** (b422150): TT bike, 10sp, new KMC chain 2026-05-21.
 - **Tarmac** (b2860836): on the Tacx Neo trainer (10sp cassette on trainer).
+- **Niner** (b16687850): Niner Air 9 scandium MTB (e-bike 2019-2025, back to
+  MTB 2025-05). Its original Strava gear b1276730 was accidentally deleted;
+  the 39 rides from 2014-2019 were re-tagged *locally only* from the
+  2024-11-21 export (meta key `niner_tags_restored`). They are still untagged
+  on Strava, so a `build-api` rebuild would drop them again.
 - **Epic** (b17607154): Specialized Epic EVO MTB, bone stock.
 - **Commueter** (b779434, sic): the DIY "fast" ebike, e-bike rides since
   Dec 2017. Did the ~26-mi-each-way Springfield commute Aug 2025 to May 2026
