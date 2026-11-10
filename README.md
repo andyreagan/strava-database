@@ -179,11 +179,30 @@ uv run strava-html               # reads strava.db, writes index.html
 uv run python build_html.py --db strava.db --out index.html
 ```
 
+The same build also writes one small JSON per activity to `activities/<id>.json`
+(only files whose contents changed are rewritten; deleted activities are removed).
+
 Then commit and push — GitHub Pages serves it automatically from `main`.
 
 ```bash
-git add index.html strava.db && git commit -m "Update dashboard" && git push
+git add index.html strava.db activities && git commit -m "Update dashboard" && git push
 ```
+
+### Per-activity pages
+
+Every activity has a linkable page at
+
+    https://strava.andyreagan.com/viewer.html?id=<strava activity id>
+
+`viewer.html` is static (not generated): it reads the `id` query parameter,
+fetches `activities/<id>.json`, and renders the stats and the route (decoded
+from Strava's `map_summary_polyline`) on a Leaflet/OpenStreetMap map, with
+previous/next links and a link back to the activity on Strava. The activity
+names in the dashboard's Activities tab link here; the ↗ still goes to Strava.
+The layout is adapted from `~/websites/tools/fitness-activity-viewer`. Only
+the summary polyline and summary stats are in the DB, so there are no
+elevation/HR charts. Note the JSON includes routes for `only_me` and
+`followers_only` activities, the same data `strava.db` already publishes.
 
 ## Development
 

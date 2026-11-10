@@ -22,6 +22,8 @@
   body { font-family: var(--font); background: var(--bg); color: var(--text);
           font-size: 14px; line-height: 1.5; }
   a { color: var(--accent); text-decoration: none; }
+  a.act-name { color: var(--text); }
+  a.act-name:hover { color: var(--accent); text-decoration: underline; }
 
   /* ── layout ── */
   header { background: var(--surface); border-bottom: 1px solid var(--border);
@@ -310,6 +312,7 @@ const isoWeek = dateStr => {
   return `${y}-W${String(w).padStart(2,'0')}`;
 };
 
+const esc = s => String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'})[c]);
 const WORKOUT_LABELS = {0:'Default',1:'Race',2:'Long Run',3:'Workout',
                           10:'Default',11:'Race',12:'Workout'};
 
@@ -655,9 +658,10 @@ function renderActivities() {
       ? `<span class="badge race" style="margin-left:4px">${wl}</span>` : '';
     const commBadge = a.commute ? `<span class="badge commute" style="margin-left:4px">commute</span>` : '';
     const link = `<a href="https://www.strava.com/activities/${a.id}" target="_blank" title="Open on Strava">↗</a>`;
+    const view = `<a class="act-name" href="viewer.html?id=${a.id}">${esc(a.name||'—')}</a>`;
     return `<tr>
       <td>${a.date}</td>
-      <td>${link} ${a.name||'—'}${badge}${commBadge}</td>
+      <td>${link} ${view}${badge}${commBadge}</td>
       <td><span class="badge ${a.sport_type}">${a.sport_type||'—'}</span></td>
       <td class="num">${fmtMi(a.miles)}</td>
       <td class="num">${fmtTime(a.moving_time_s)}</td>

@@ -1,0 +1,217 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Activity · Andy's Strava</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<!--
+  Static activity viewer for strava.andyreagan.com.
+  Usage: viewer.html?id=<strava activity id>
+  Loads activities/<id>.json (written by build_html.py from strava.db) and
+  renders the summary polyline + stats. Adapted from the map/stat-card layout
+  of ~/websites/tools/fitness-activity-viewer.
+-->
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  :root {
+    --bg: #0f1117; --surface: #1a1d27; --border: #2a2d3a;
+    --accent: #fc4c02; --text: #e8eaf0; --muted: #8b90a0; --good: #43aa8b;
+    --radius: 8px; --font: 'Inter', system-ui, sans-serif;
+  }
+  body { font-family: var(--font); background: var(--bg); color: var(--text);
+         font-size: 14px; line-height: 1.5; }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  header { background: var(--surface); border-bottom: 1px solid var(--border);
+           padding: 12px 16px; display: flex; align-items: center; gap: 16px;
+           flex-wrap: wrap; }
+  header h1 { font-size: 1.2rem; font-weight: 700; }
+  header nav { margin-left: auto; display: flex; gap: 14px; font-size: 0.9rem; }
+  .container { max-width: 1100px; margin: 0 auto; padding: 20px 16px; }
+  .title { font-size: 1.6rem; font-weight: 700; line-height: 1.25; margin-bottom: 4px;
+           overflow-wrap: anywhere; }
+  .meta { color: var(--muted); display: flex; flex-wrap: wrap; gap: 6px 10px;
+          align-items: center; margin-bottom: 16px; }
+  .badge { display: inline-block; padding: 1px 8px; border-radius: 99px;
+           font-size: 0.75rem; font-weight: 600; background: var(--border); color: var(--text); }
+  .badge.Run { background: #2d4a3e; color: #43aa8b; }
+  .badge.VirtualRun { background: #1e3a2d; color: #76c893; }
+  .badge.TrailRun { background: #2a3a1e; color: #a7c957; }
+  .badge.Ride { background: #3a2d1a; color: #f8961e; }
+  .badge.VirtualRide { background: #2d1a3a; color: #c77dff; }
+  .badge.EBikeRide { background: #1a2a1a; color: #80b918; }
+  .badge.GravelRide { background: #3a2a1a; color: #f4a261; }
+  .badge.MountainBikeRide { background: #2a1a1a; color: #e76f51; }
+  .badge.Walk { background: #1e2a3a; color: #5fa8d3; }
+  .badge.Hike { background: #2a1e3a; color: #9d77c9; }
+  .badge.Swim { background: #1a2e3a; color: #48bfe3; }
+  .badge.flag { background: #3a1e1e; color: #fc8d62; }
+  .stats { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+           gap: 10px; margin-bottom: 16px; }
+  .stat { background: var(--surface); border: 1px solid var(--border);
+          border-radius: var(--radius); padding: 10px 12px; }
+  .stat .label { color: var(--muted); font-size: 0.75rem; text-transform: uppercase;
+                 letter-spacing: 0.04em; }
+  .stat .value { font-size: 1.35rem; font-weight: 700; font-variant-numeric: tabular-nums; }
+  .stat .unit { color: var(--muted); font-size: 0.85rem; margin-left: 2px; }
+  #map { height: 460px; border-radius: var(--radius); border: 1px solid var(--border);
+         background: var(--surface); margin-bottom: 16px; }
+  .nomap { color: var(--muted); padding: 24px; text-align: center;
+           background: var(--surface); border: 1px solid var(--border);
+           border-radius: var(--radius); margin-bottom: 16px; }
+  .pager { display: flex; justify-content: space-between; gap: 12px; color: var(--muted); }
+  .msg { color: var(--muted); padding: 40px 0; text-align: center; }
+  .hidden { display: none; }
+  @media (max-width: 600px) { #map { height: 320px; } .title { font-size: 1.3rem; } }
+</style>
+</head>
+<body>
+<header>
+  <h1><a href="./">Andy's Strava</a></h1>
+  <nav>
+    <a id="strava-link" href="https://www.strava.com/athletes" target="_blank" rel="noopener">View on Strava ↗</a>
+  </nav>
+</header>
+<div class="container">
+  <div id="msg" class="msg">Loading…</div>
+  <div id="content" class="hidden">
+    <div class="title" id="title"></div>
+    <div class="meta" id="meta"></div>
+    <div class="stats" id="stats"></div>
+    <div id="map"></div>
+    <div id="nomap" class="nomap hidden">No GPS route for this activity.</div>
+    <div class="pager">
+      <a id="prev" href="#">‹ Previous activity</a>
+      <a id="next" href="#">Next activity ›</a>
+    </div>
+  </div>
+</div>
+<script>
+const WORKOUT_LABELS = {1: 'Race', 2: 'Long Run', 3: 'Workout', 11: 'Race', 12: 'Workout'};
+const PACE_SPORTS = /Run|Walk|Hike/;
+const M_TO_MI = 0.000621371, M_TO_FT = 3.28084, MS_TO_MPH = 2.23694;
+
+const $ = id => document.getElementById(id);
+const esc = s => String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'})[c]);
+
+function fmtDur(s) {
+  if (s == null) return null;
+  const h = Math.floor(s / 3600), m = Math.floor(s % 3600 / 60), sec = Math.round(s % 60);
+  return h ? `${h}:${String(m).padStart(2,'0')}:${String(sec).padStart(2,'0')}`
+           : `${m}:${String(sec).padStart(2,'0')}`;
+}
+function fmtPace(ms) {  // m/s -> min/mi
+  if (!ms) return null;
+  const minPerMi = 60 / (ms * MS_TO_MPH);
+  let m = Math.floor(minPerMi), s = Math.round((minPerMi - m) * 60);
+  if (s === 60) { m += 1; s = 0; }
+  return `${m}:${String(s).padStart(2,'0')}`;
+}
+
+// Google encoded polyline -> [[lat, lng], ...]
+function decodePolyline(str) {
+  const out = []; let i = 0, lat = 0, lng = 0;
+  while (i < str.length) {
+    for (const k of [0, 1]) {
+      let shift = 0, result = 0, b;
+      do { b = str.charCodeAt(i++) - 63; result |= (b & 0x1f) << shift; shift += 5; } while (b >= 0x20);
+      const d = (result & 1) ? ~(result >> 1) : (result >> 1);
+      if (k === 0) lat += d; else lng += d;
+    }
+    out.push([lat / 1e5, lng / 1e5]);
+  }
+  return out;
+}
+
+function stat(label, value, unit = '') {
+  if (value == null || value === '' || Number.isNaN(value)) return '';
+  return `<div class="stat"><div class="label">${label}</div>
+    <div><span class="value">${value}</span><span class="unit">${unit}</span></div></div>`;
+}
+
+function render(a) {
+  document.title = `${a.name || 'Activity'} · Andy's Strava`;
+  $('title').textContent = a.name || 'Untitled activity';
+
+  const d = new Date(a.start_date);
+  const tz = (a.timezone || '').split(' ').pop();  // "(GMT-05:00) America/New_York"
+  let when;
+  try {
+    when = d.toLocaleString('en-US', { timeZone: tz || undefined, weekday: 'short',
+      year: 'numeric', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+  } catch { when = (a.start_date_local || '').replace('T', ' ').replace('Z', ''); }
+
+  const badges = [`<span class="badge ${esc(a.sport_type || '')}">${esc(a.sport_type || 'Activity')}</span>`];
+  if (WORKOUT_LABELS[a.workout_type]) badges.push(`<span class="badge flag">${WORKOUT_LABELS[a.workout_type]}</span>`);
+  if (a.commute) badges.push('<span class="badge">commute</span>');
+  if (a.trainer) badges.push('<span class="badge">trainer</span>');
+  if (a.manual) badges.push('<span class="badge">manual</span>');
+  $('meta').innerHTML = `<span>${esc(when)}</span>${badges.join('')}` +
+    (a.gear_name ? `<span>· ${esc(a.gear_name)}</span>` : '');
+
+  const pace = PACE_SPORTS.test(a.sport_type || '');
+  const r = (x, n = 0) => x == null ? null : Number(x).toFixed(n);
+  $('stats').innerHTML = [
+    a.distance_m ? stat('Distance', r(a.distance_m * M_TO_MI, 2), 'mi') : '',
+    stat('Moving time', fmtDur(a.moving_time_s)),
+    a.elapsed_time_s !== a.moving_time_s ? stat('Elapsed', fmtDur(a.elapsed_time_s)) : '',
+    a.distance_m ? stat('Elevation', r(a.total_elevation_m * M_TO_FT), 'ft') : '',
+    a.distance_m ? (pace ? stat('Avg pace', fmtPace(a.average_speed_ms), '/mi')
+                         : stat('Avg speed', r(a.average_speed_ms * MS_TO_MPH, 1), 'mph')) : '',
+    a.distance_m && !pace ? stat('Max speed', r(a.max_speed_ms * MS_TO_MPH, 1), 'mph') : '',
+    stat('Avg HR', r(a.average_heartrate), 'bpm'),
+    stat('Max HR', r(a.max_heartrate), 'bpm'),
+    stat(a.device_watts ? 'Avg power' : 'Est. power', r(a.average_watts), 'W'),
+    stat('Cadence', r(a.average_cadence), pace ? 'spm' : 'rpm'),
+    stat('Calories', r(a.calories)),
+    stat('Relative effort', r(a.suffer_score)),
+    a.kudos_count ? stat('Kudos', a.kudos_count) : '',
+    a.pr_count ? stat('PRs', a.pr_count) : '',
+  ].join('');
+
+  const pts = a.map_summary_polyline ? decodePolyline(a.map_summary_polyline) : [];
+  if (pts.length > 1) {
+    const map = L.map('map');
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      attribution: '© OpenStreetMap contributors', maxZoom: 19 }).addTo(map);
+    const line = L.polyline(pts, { color: '#fc4c02', weight: 3, opacity: 0.9 }).addTo(map);
+    const dot = (bg, t) => L.divIcon({ className: '', iconSize: [22, 22], iconAnchor: [11, 11],
+      html: `<div style="background:${bg};width:22px;height:22px;border-radius:50%;border:3px solid #fff;box-shadow:0 1px 4px rgba(0,0,0,.4);color:#fff;font:700 11px/16px system-ui;text-align:center">${t}</div>` });
+    L.marker(pts[0], { icon: dot('#22c55e', 'S') }).addTo(map);
+    L.marker(pts[pts.length - 1], { icon: dot('#ef4444', 'F') }).addTo(map);
+    map.fitBounds(line.getBounds(), { padding: [30, 30], maxZoom: 15 });
+  } else {
+    $('map').classList.add('hidden');
+    $('nomap').classList.remove('hidden');
+  }
+
+  for (const [el, id] of [['prev', a.prev_id], ['next', a.next_id]]) {
+    if (id) $(el).href = `viewer.html?id=${id}`;
+    else $(el).style.visibility = 'hidden';
+  }
+}
+
+(async () => {
+  const id = new URLSearchParams(location.search).get('id');
+  if (!id || !/^\d+$/.test(id)) {
+    $('msg').innerHTML = 'No activity id given. Use <code>viewer.html?id=&lt;strava id&gt;</code> or pick one from the <a href="./">dashboard</a>.';
+    return;
+  }
+  $('strava-link').href = `https://www.strava.com/activities/${id}`;
+  try {
+    const res = await fetch(`activities/${id}.json`);
+    if (!res.ok) throw new Error(res.status);
+    const a = await res.json();
+    $('msg').classList.add('hidden');
+    $('content').classList.remove('hidden');
+    render(a);
+  } catch (e) {
+    $('msg').innerHTML = `Activity ${esc(id)} isn't in the local index yet. ` +
+      `<a href="https://www.strava.com/activities/${esc(id)}">Open it on Strava ↗</a>`;
+  }
+})();
+</script>
+</body>
+</html>

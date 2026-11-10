@@ -70,6 +70,8 @@ HTML_TEMPLATE = """\
   body {{ font-family: var(--font); background: var(--bg); color: var(--text);
           font-size: 14px; line-height: 1.5; }}
   a {{ color: var(--accent); text-decoration: none; }}
+  a.act-name {{ color: var(--text); }}
+  a.act-name:hover {{ color: var(--accent); text-decoration: underline; }}
 
   /* ── layout ── */
   header {{ background: var(--surface); border-bottom: 1px solid var(--border);
@@ -355,6 +357,7 @@ const isoWeek = dateStr => {{
   return `${{y}}-W${{String(w).padStart(2,'0')}}`;
 }};
 
+const esc = s => String(s).replace(/[&<>"]/g, c => ({{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}})[c]);
 const WORKOUT_LABELS = {{0:'Default',1:'Race',2:'Long Run',3:'Workout',
                           10:'Default',11:'Race',12:'Workout'}};
 
@@ -700,9 +703,10 @@ function renderActivities() {{
       ? `<span class="badge race" style="margin-left:4px">${{wl}}</span>` : '';
     const commBadge = a.commute ? `<span class="badge commute" style="margin-left:4px">commute</span>` : '';
     const link = `<a href="https://www.strava.com/activities/${{a.id}}" target="_blank" title="Open on Strava">↗</a>`;
+    const view = `<a class="act-name" href="viewer.html?id=${{a.id}}">${{esc(a.name||'—')}}</a>`;
     return `<tr>
       <td>${{a.date}}</td>
-      <td>${{link}} ${{a.name||'—'}}${{badge}}${{commBadge}}</td>
+      <td>${{link}} ${{view}}${{badge}}${{commBadge}}</td>
       <td><span class="badge ${{a.sport_type}}">${{a.sport_type||'—'}}</span></td>
       <td class="num">${{fmtMi(a.miles)}}</td>
       <td class="num">${{fmtTime(a.moving_time_s)}}</td>
@@ -757,6 +761,54 @@ render();
 """
 
 
+DETAIL_SQL = """
+    SELECT a.id, a.name, a.sport_type, a.start_date, a.start_date_local, a.timezone,
+           a.distance_m, a.moving_time_s, a.elapsed_time_s, a.total_elevation_m,
+           a.average_speed_ms, a.max_speed_ms, a.average_heartrate, a.max_heartrate,
+           a.average_watts, a.device_watts, a.average_cadence, a.suffer_score,
+           a.calories, a.gear_id, COALESCE(g.name, a.gear_name) AS gear_name,
+           a.commute, a.trainer, a.manual, a.workout_type, a.map_summary_polyline,
+           a.achievement_count, a.kudos_count, a.comment_count, a.athlete_count,
+           a.photo_count, a.pr_count
+    FROM activities a
+    LEFT JOIN gear g ON g.id = a.gear_id
+    ORDER BY a.start_date_local ASC, a.id ASC
+"""
+
+
+def write_activity_files(db_path: str, out_dir: Path) -> None:
+    """Write one JSON per activity for viewer.html?id=<id>.
+
+    Files are only rewritten when their contents change, and files for
+    activities no longer in the DB are removed, so the daily commit only
+    touches what actually changed.
+    """
+    con = sqlite3.connect(db_path)
+    con.row_factory = sqlite3.Row
+    rows = [dict(r) for r in con.execute(DETAIL_SQL)]
+    con.close()
+
+    out_dir.mkdir(exist_ok=True)
+    keep: set[str] = set()
+    written = 0
+    for i, r in enumerate(rows):
+        r["prev_id"] = rows[i - 1]["id"] if i > 0 else None
+        r["next_id"] = rows[i + 1]["id"] if i + 1 < len(rows) else None
+        name = f"{r['id']}.json"
+        keep.add(name)
+        path = out_dir / name
+        text = json.dumps(r, separators=(",", ":"), ensure_ascii=False)
+        if not path.exists() or path.read_text(encoding="utf-8") != text:
+            path.write_text(text, encoding="utf-8")
+            written += 1
+    removed = 0
+    for path in out_dir.glob("*.json"):
+        if path.name not in keep:
+            path.unlink()
+            removed += 1
+    print(f"Activity files in {out_dir}/: {len(rows)} total, {written} written, {removed} removed")
+
+
 def build(db_path: str, out_path: str) -> None:
     print(f"Loading data from {db_path} …")
     acts, bikes = load_data(db_path)
@@ -773,6 +825,8 @@ def build(db_path: str, out_path: str) -> None:
     Path(out_path).write_text(html, encoding="utf-8")
     size = Path(out_path).stat().st_size
     print(f"Written {out_path} ({size/1024/1024:.2f} MB, {len(acts)} activities)")
+
+    write_activity_files(db_path, Path(out_path).parent / "activities")
 
 
 def main() -> None:

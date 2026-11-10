@@ -63,5 +63,6 @@ archaeology session are seeded in `strava.db` tables `components` and
 
 - Keep Claude's memories in this file, not only in the hidden per-user
   memory directory, so they are readable and versioned with the repo.
-- After a `strava-db update`, rebuild `index.html` with `build_html.py` and
-  commit both together.
+- After a `strava-db update`, rebuild with `build_html.py` and commit
+  `index.html`, `strava.db` and `activities/` together (activities/ holds the
+  per-activity JSON that `viewer.html?id=` reads).
