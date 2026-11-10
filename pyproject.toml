@@ -7,6 +7,7 @@ requires-python = ">=3.11"
 dependencies = [
     "requests>=2.32",
     "python-dotenv>=1.0",
+    "garmin-fit-sdk>=21.221.0",
 ]
 
 [project.scripts]
@@ -18,7 +19,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["strava_db.py", "build_html.py"]
+packages = ["strava_db.py", "build_html.py", "streams.py"]
 
 [dependency-groups]
 dev = [

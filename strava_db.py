@@ -15,6 +15,20 @@ MODES
                   then re-verify the last ~30 days already stored.
                   Usage: python strava_db.py update
 
+STREAMS (time series for the activity viewer; stored in streams.db)
+-------
+  update also fetches streams for up to --streams-budget (default 80)
+  activities that have none, newest first, so new activities get charts
+  and any backlog drains slowly within the daily rate limit.
+
+  backfill-streams  Fetch streams for missing activities via the API,
+                    sleeping through rate-limit windows.
+                    Usage: python strava_db.py backfill-streams [--streams-budget 900]
+
+  import-streams    Load original .fit/.gpx/.tcx files from a Strava export
+                    (ZIP or extracted dir) into streams.db. Fast; no API use.
+                    Usage: python strava_db.py import-streams <export.zip|dir> [--force]
+
 QUERIES (convenience)
 ---------------------
   stats           Print a quick summary to stdout.
@@ -43,6 +57,7 @@ ENV / .env
   STRAVA_CLIENT_ID, STRAVA_CLIENT_SECRET,
   STRAVA_ACCESS_TOKEN, STRAVA_REFRESH_TOKEN,
   DB_PATH  (default: strava.db)
+  STREAMS_DB_PATH  (default: streams.db)
 """
 
 import argparse
@@ -60,6 +75,8 @@ from typing import Any, Optional
 
 import requests
 from dotenv import load_dotenv, set_key
+
+import streams
 
 
 def write_dotenv_tokens(access: str, refresh: str, path: Path = Path(".env")) -> None:
@@ -1551,10 +1568,12 @@ def main() -> None:
     parser.add_argument("mode", choices=["build-archive", "build-api",
                                          "update", "stats",
                                          "backfill-detail", "component",
-                                         "status", "tui"],
+                                         "status", "tui",
+                                         "backfill-streams", "import-streams"],
                         help="Operation to perform")
     parser.add_argument("archive", nargs="?",
-                        help="(build-archive) Path to Strava export ZIP; "
+                        help="(build-archive / import-streams) Path to Strava "
+                             "export ZIP (import-streams also takes a dir); "
                              "(component) action: install | remove | state | "
                              "measure | status | inventory | history; "
                              "(status) optional bike")
@@ -1569,6 +1588,12 @@ def main() -> None:
                         metavar="TYPE",
                         help="(backfill-detail) Limit to these sport types, "
                              "e.g. --sport-types Run Ride")
+    parser.add_argument("--streams-budget", type=int, default=None,
+                        help="(update / backfill-streams) Max activities to "
+                             "fetch streams for (default: 80 for update, "
+                             "900 for backfill-streams; 0 disables)")
+    parser.add_argument("--force", action="store_true",
+                        help="(import-streams) Replace streams already stored")
     parser.add_argument("--env", default=".env",
                         help="Path to .env file (default: .env)")
     parser.add_argument("--date", default=None, metavar="YYYY-MM-DD",
@@ -1590,6 +1615,7 @@ def main() -> None:
     load_dotenv(env_path, override=False)  # populate os.environ from .env
 
     db_path = args.db or os.environ.get("DB_PATH", "strava.db")
+    streams_path = os.environ.get("STREAMS_DB_PATH", "streams.db")
 
     # ---- dispatch ----
     if args.mode == "build-archive":
@@ -1604,6 +1630,23 @@ def main() -> None:
     elif args.mode == "update":
         client = make_client(env_path)
         do_update(client, db_path, verify_days=args.verify_days)
+        budget = 80 if args.streams_budget is None else args.streams_budget
+        if budget > 0:
+            streams.fetch_missing(client, open_db(db_path),
+                                  streams.open_streams_db(streams_path), budget)
+
+    elif args.mode == "backfill-streams":
+        client = make_client(env_path)
+        budget = 900 if args.streams_budget is None else args.streams_budget
+        streams.fetch_missing(client, open_db(db_path),
+                              streams.open_streams_db(streams_path), budget)
+
+    elif args.mode == "import-streams":
+        if not args.archive:
+            parser.error("import-streams requires a Strava export ZIP or directory")
+        streams.import_archive(args.archive, open_db(db_path),
+                               streams.open_streams_db(streams_path),
+                               force=args.force)
 
     elif args.mode == "backfill-detail":
         client = make_client(env_path)

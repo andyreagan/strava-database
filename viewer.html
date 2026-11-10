@@ -6,11 +6,13 @@
 <title>Activity · Andy's Strava</title>
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
 <!--
   Static activity viewer for strava.andyreagan.com.
   Usage: viewer.html?id=<strava activity id>
   Loads activities/<id>.json (written by build_html.py from strava.db) and
-  renders the summary polyline + stats. Adapted from the map/stat-card layout
+  renders stats, the route, and (when streams/<id>.json exists) elevation /
+  HR / pace / power / cadence charts linked to a marker on the map. Adapted from the map/stat-card layout
   of ~/websites/tools/fitness-activity-viewer.
 -->
 <style>
@@ -61,6 +63,15 @@
   .nomap { color: var(--muted); padding: 24px; text-align: center;
            background: var(--surface); border: 1px solid var(--border);
            border-radius: var(--radius); margin-bottom: 16px; }
+  .charts { display: grid; gap: 12px; margin-bottom: 16px; }
+  .chart { background: var(--surface); border: 1px solid var(--border);
+           border-radius: var(--radius); padding: 10px 12px 6px; }
+  .chart h3 { font-size: 0.75rem; font-weight: 600; color: var(--muted);
+              text-transform: uppercase; letter-spacing: 0.04em; margin-bottom: 4px;
+              display: flex; justify-content: space-between; }
+  .chart h3 .readout { color: var(--text); text-transform: none; letter-spacing: 0;
+                       font-variant-numeric: tabular-nums; }
+  .chart .wrap { position: relative; height: 130px; }
   .pager { display: flex; justify-content: space-between; gap: 12px; color: var(--muted); }
   .msg { color: var(--muted); padding: 40px 0; text-align: center; }
   .hidden { display: none; }
@@ -82,6 +93,7 @@
     <div class="stats" id="stats"></div>
     <div id="map"></div>
     <div id="nomap" class="nomap hidden">No GPS route for this activity.</div>
+    <div class="charts" id="charts"></div>
     <div class="pager">
       <a id="prev" href="#">‹ Previous activity</a>
       <a id="next" href="#">Next activity ›</a>
@@ -171,26 +183,146 @@ function render(a) {
     a.pr_count ? stat('PRs', a.pr_count) : '',
   ].join('');
 
-  const pts = a.map_summary_polyline ? decodePolyline(a.map_summary_polyline) : [];
-  if (pts.length > 1) {
-    const map = L.map('map');
-    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-      attribution: '© OpenStreetMap contributors', maxZoom: 19 }).addTo(map);
-    const line = L.polyline(pts, { color: '#fc4c02', weight: 3, opacity: 0.9 }).addTo(map);
-    const dot = (bg, t) => L.divIcon({ className: '', iconSize: [22, 22], iconAnchor: [11, 11],
-      html: `<div style="background:${bg};width:22px;height:22px;border-radius:50%;border:3px solid #fff;box-shadow:0 1px 4px rgba(0,0,0,.4);color:#fff;font:700 11px/16px system-ui;text-align:center">${t}</div>` });
-    L.marker(pts[0], { icon: dot('#22c55e', 'S') }).addTo(map);
-    L.marker(pts[pts.length - 1], { icon: dot('#ef4444', 'F') }).addTo(map);
-    map.fitBounds(line.getBounds(), { padding: [30, 30], maxZoom: 15 });
-  } else {
-    $('map').classList.add('hidden');
-    $('nomap').classList.remove('hidden');
-  }
-
   for (const [el, id] of [['prev', a.prev_id], ['next', a.next_id]]) {
     if (id) $(el).href = `viewer.html?id=${id}`;
     else $(el).style.visibility = 'hidden';
   }
+}
+
+let map = null, hoverMarker = null, mapPts = [];
+function renderMap(pts) {
+  mapPts = pts;
+  if (pts.length < 2) {
+    $('map').classList.add('hidden');
+    $('nomap').classList.remove('hidden');
+    return;
+  }
+  map = L.map('map');
+  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    attribution: '© OpenStreetMap contributors', maxZoom: 19 }).addTo(map);
+  const line = L.polyline(pts, { color: '#fc4c02', weight: 3, opacity: 0.9 }).addTo(map);
+  const dot = (bg, t) => L.divIcon({ className: '', iconSize: [22, 22], iconAnchor: [11, 11],
+    html: `<div style="background:${bg};width:22px;height:22px;border-radius:50%;border:3px solid #fff;box-shadow:0 1px 4px rgba(0,0,0,.4);color:#fff;font:700 11px/16px system-ui;text-align:center">${t}</div>` });
+  L.marker(pts[0], { icon: dot('#22c55e', 'S') }).addTo(map);
+  L.marker(pts[pts.length - 1], { icon: dot('#ef4444', 'F') }).addTo(map);
+  map.fitBounds(line.getBounds(), { padding: [30, 30], maxZoom: 15 });
+}
+
+// ── Charts from streams/<id>.json (see streams.downsample) ──────────────
+const charts = [];
+let llIndex = null;  // sample index -> mapPts index
+
+function syncHover(i) {
+  for (const c of charts) {
+    if (i == null) { c.setActiveElements([]); c.tooltip.setActiveElements([]); }
+    else {
+      const el = [{ datasetIndex: 0, index: i }];
+      c.setActiveElements(el);
+    }
+    c.$hoverIndex = i;
+    c.draw();
+    const v = i == null ? null : c.data.datasets[0].data[i].y;
+    c.$readout.textContent = v == null ? '' : c.$fmt(v);
+  }
+  if (!map) return;
+  const k = i == null ? -1 : (llIndex ? llIndex[i] : i);
+  if (k < 0 || !mapPts[k]) { if (hoverMarker) hoverMarker.remove(), hoverMarker = null; return; }
+  if (!hoverMarker) hoverMarker = L.circleMarker(mapPts[k], { radius: 6, color: '#fff',
+    weight: 2, fillColor: '#fc4c02', fillOpacity: 1 }).addTo(map);
+  else hoverMarker.setLatLng(mapPts[k]);
+}
+
+const crosshair = { id: 'crosshair', afterDraw(c) {
+  const i = c.$hoverIndex; if (i == null) return;
+  const x = c.scales.x.getPixelForValue(c.data.datasets[0].data[i].x);
+  const { top, bottom } = c.chartArea, ctx = c.ctx;
+  ctx.save(); ctx.strokeStyle = '#e8eaf0'; ctx.lineWidth = 1; ctx.globalAlpha = 0.6;
+  ctx.beginPath(); ctx.moveTo(x, top); ctx.lineTo(x, bottom); ctx.stroke(); ctx.restore();
+} };
+
+function renderCharts(a, s) {
+  const isRun = PACE_SPORTS.test(a.sport_type || '');
+  const useDist = s.d && s.d[s.d.length - 1] > 100;
+  const xs = useDist ? s.d.map(m => m * M_TO_MI) : s.t.map(t => t / 60);
+  const xFmt = useDist ? v => `${v.toFixed(1)} mi` : v => fmtDur(v * 60);
+
+  // speed (m/s): recorded smooth velocity, else derived from distance/time
+  let speed = s.v ? s.v.map(v => v == null ? null : v / 100) : null;
+  if (!speed && s.d) speed = s.d.map((d, i) => {
+    if (i === 0) return null;
+    const dt = s.t[i] - s.t[i - 1];
+    return dt > 0 ? (d - s.d[i - 1]) / dt : null;
+  });
+
+  const series = [];
+  if (s.alt) series.push({ name: 'Elevation', color: '#8b90a0', fill: true,
+    y: s.alt.map(v => v == null ? null : v / 10 * M_TO_FT), fmt: v => `${Math.round(v)} ft` });
+  if (s.hr) series.push({ name: 'Heart rate', color: '#ef4444',
+    y: s.hr, fmt: v => `${Math.round(v)} bpm` });
+  if (speed) {
+    if (isRun) series.push({ name: 'Pace', color: '#43aa8b', reverse: true,
+      y: speed.map(v => v && v > 0.7 ? 1609.344 / v / 60 : null),  // min/mi; drop stops
+      fmt: v => `${fmtDur(v * 60)} /mi`, tick: v => fmtDur(v * 60), clip: true });
+    else series.push({ name: 'Speed', color: '#f8961e',
+      y: speed.map(v => v == null ? null : v * MS_TO_MPH), fmt: v => `${v.toFixed(1)} mph` });
+  }
+  if (s.w) series.push({ name: 'Power', color: '#c77dff', y: s.w, fmt: v => `${Math.round(v)} W` });
+  if (s.cad) series.push({ name: 'Cadence', color: '#5fa8d3',
+    y: s.cad.map(v => v == null ? null : isRun ? v * 2 : v),
+    fmt: v => `${Math.round(v)} ${isRun ? 'spm' : 'rpm'}` });
+
+  const host = $('charts');
+  for (const ser of series) {
+    if (!ser.y.some(v => v)) continue;  // all null/zero: sensor absent
+    let yMin, yMax;
+    if (ser.clip) {  // pace spikes at stops would flatten the chart
+      const v = ser.y.filter(x => x != null).sort((p, q) => p - q);
+      const q = f => v[Math.min(v.length - 1, Math.floor(f * v.length))];
+      yMin = Math.floor(q(0.02)); yMax = Math.ceil(q(0.98));
+    }
+    const card = document.createElement('div');
+    card.className = 'chart';
+    card.innerHTML = `<h3><span>${ser.name}</span><span class="readout"></span></h3><div class="wrap"><canvas></canvas></div>`;
+    host.appendChild(card);
+    const c = new Chart(card.querySelector('canvas'), {
+      type: 'line',
+      data: { datasets: [{ data: xs.map((x, i) => ({ x, y: ser.y[i] })),
+        borderColor: ser.color, backgroundColor: ser.color + '33', fill: !!ser.fill,
+        borderWidth: 1.5, pointRadius: 0, pointHoverRadius: 0, spanGaps: false }] },
+      options: {
+        animation: false, maintainAspectRatio: false, parsing: false, normalized: true,
+        interaction: { mode: 'index', axis: 'x', intersect: false },
+        plugins: { legend: { display: false }, tooltip: { enabled: false } },
+        scales: {
+          x: { type: 'linear', min: xs[0], max: xs[xs.length - 1],
+               grid: { color: '#2a2d3a' }, ticks: { color: '#8b90a0', callback: xFmt, maxTicksLimit: 8 } },
+          y: { reverse: !!ser.reverse, min: yMin, max: yMax, grid: { color: '#2a2d3a' },
+               ticks: { color: '#8b90a0', maxTicksLimit: 4, callback: ser.tick } },
+        },
+        onHover: (e, els) => syncHover(els.length ? els[0].index : null),
+      },
+      plugins: [crosshair],
+    });
+    c.$fmt = v => `${ser.fmt(v)} @ ${xFmt(xs[c.$hoverIndex])}`;
+    c.$readout = card.querySelector('.readout');
+    card.querySelector('canvas').addEventListener('mouseleave', () => syncHover(null));
+    charts.push(c);
+  }
+}
+
+async function show(a) {
+  render(a);
+  let s = null;
+  if (a.streams) {
+    try { const r = await fetch(`streams/${a.id}.json`); if (r.ok) s = await r.json(); } catch {}
+  }
+  if (s && s.ll) {
+    renderMap(decodePolyline(s.ll));
+    llIndex = s.lli || null;
+  } else {
+    renderMap(a.map_summary_polyline ? decodePolyline(a.map_summary_polyline) : []);
+  }
+  if (s) renderCharts(a, s);
 }
 
 (async () => {
@@ -200,17 +332,19 @@ function render(a) {
     return;
   }
   $('strava-link').href = `https://www.strava.com/activities/${id}`;
+  let a;
   try {
     const res = await fetch(`activities/${id}.json`);
     if (!res.ok) throw new Error(res.status);
-    const a = await res.json();
-    $('msg').classList.add('hidden');
-    $('content').classList.remove('hidden');
-    render(a);
+    a = await res.json();
   } catch (e) {
     $('msg').innerHTML = `Activity ${esc(id)} isn't in the local index yet. ` +
       `<a href="https://www.strava.com/activities/${esc(id)}">Open it on Strava ↗</a>`;
+    return;
   }
+  $('msg').classList.add('hidden');
+  $('content').classList.remove('hidden');
+  await show(a);
 })();
 </script>
 </body>

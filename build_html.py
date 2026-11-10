@@ -12,6 +12,8 @@ import json
 import sqlite3
 from pathlib import Path
 
+import streams as streams_mod
+
 
 def load_data(db_path: str) -> tuple[list[dict], dict[str, str]]:
     con = sqlite3.connect(db_path)
@@ -776,7 +778,38 @@ DETAIL_SQL = """
 """
 
 
-def write_activity_files(db_path: str, out_dir: Path) -> None:
+def write_stream_files(streams_db: str, out_dir: Path, rebuild: bool = False) -> set[int]:
+    """Write downsampled streams/<id>.json for every activity in streams.db.
+
+    Existing files are left alone (a stored stream never changes) unless
+    `rebuild` is set, e.g. after changing the downsampling format. Returns the
+    ids that have a published stream file.
+    """
+    con = streams_mod.open_streams_db(streams_db)
+    ids = [r[0] for r in con.execute(
+        "SELECT activity_id FROM streams WHERE source != 'none'")]
+    out_dir.mkdir(exist_ok=True)
+    written = 0
+    for aid in ids:
+        path = out_dir / f"{aid}.json"
+        if path.exists() and not rebuild:
+            continue
+        ds = streams_mod.downsample(streams_mod.load(con, aid))
+        path.write_text(json.dumps(ds, separators=(",", ":")), encoding="utf-8")
+        written += 1
+    con.close()
+    keep = {f"{aid}.json" for aid in ids}
+    removed = 0
+    for path in out_dir.glob("*.json"):
+        if path.name not in keep:
+            path.unlink()
+            removed += 1
+    print(f"Stream files in {out_dir}/: {len(ids)} total, {written} written, {removed} removed")
+    return set(ids)
+
+
+def write_activity_files(db_path: str, out_dir: Path,
+                         with_streams: set[int]) -> None:
     """Write one JSON per activity for viewer.html?id=<id>.
 
     Files are only rewritten when their contents change, and files for
@@ -794,6 +827,7 @@ def write_activity_files(db_path: str, out_dir: Path) -> None:
     for i, r in enumerate(rows):
         r["prev_id"] = rows[i - 1]["id"] if i > 0 else None
         r["next_id"] = rows[i + 1]["id"] if i + 1 < len(rows) else None
+        r["streams"] = r["id"] in with_streams
         name = f"{r['id']}.json"
         keep.add(name)
         path = out_dir / name
@@ -809,7 +843,8 @@ def write_activity_files(db_path: str, out_dir: Path) -> None:
     print(f"Activity files in {out_dir}/: {len(rows)} total, {written} written, {removed} removed")
 
 
-def build(db_path: str, out_path: str) -> None:
+def build(db_path: str, out_path: str, streams_db: str = "streams.db",
+          rebuild_streams: bool = False) -> None:
     print(f"Loading data from {db_path} …")
     acts, bikes = load_data(db_path)
 
@@ -826,15 +861,21 @@ def build(db_path: str, out_path: str) -> None:
     size = Path(out_path).stat().st_size
     print(f"Written {out_path} ({size/1024/1024:.2f} MB, {len(acts)} activities)")
 
-    write_activity_files(db_path, Path(out_path).parent / "activities")
+    site = Path(out_path).parent
+    with_streams = write_stream_files(streams_db, site / "streams", rebuild_streams)
+    write_activity_files(db_path, site / "activities", with_streams)
 
 
 def main() -> None:
     ap = argparse.ArgumentParser(description="Generate index.html from strava.db")
     ap.add_argument("--db",  default="strava.db",   help="SQLite DB path")
     ap.add_argument("--out", default="index.html",  help="Output HTML path")
+    ap.add_argument("--streams-db", default="streams.db",
+                    help="Local full-resolution streams DB (see streams.py)")
+    ap.add_argument("--rebuild-streams", action="store_true",
+                    help="Rewrite every streams/<id>.json, not just new ones")
     args = ap.parse_args()
-    build(args.db, args.out)
+    build(args.db, args.out, args.streams_db, args.rebuild_streams)
 
 
 if __name__ == "__main__":

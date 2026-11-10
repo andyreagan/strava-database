@@ -185,7 +185,7 @@ The same build also writes one small JSON per activity to `activities/<id>.json`
 Then commit and push — GitHub Pages serves it automatically from `main`.
 
 ```bash
-git add index.html strava.db activities && git commit -m "Update dashboard" && git push
+git add index.html strava.db activities streams && git commit -m "Update dashboard" && git push
 ```
 
 ### Per-activity pages
@@ -199,10 +199,39 @@ fetches `activities/<id>.json`, and renders the stats and the route (decoded
 from Strava's `map_summary_polyline`) on a Leaflet/OpenStreetMap map, with
 previous/next links and a link back to the activity on Strava. The activity
 names in the dashboard's Activities tab link here; the ↗ still goes to Strava.
-The layout is adapted from `~/websites/tools/fitness-activity-viewer`. Only
-the summary polyline and summary stats are in the DB, so there are no
-elevation/HR charts. Note the JSON includes routes for `only_me` and
-`followers_only` activities, the same data `strava.db` already publishes.
+The layout is adapted from `~/websites/tools/fitness-activity-viewer`. Note the
+JSON includes routes for `only_me` and `followers_only` activities, the same
+data `strava.db` already publishes.
+
+### Streams (charts on the activity page)
+
+Full-resolution time series (GPS, elevation, HR, speed, power, cadence,
+temperature) live in **`streams.db`**, which is local only and gitignored
+(about 110 KB per activity, ~1 GB in total). It can be rebuilt from the API or
+an archive. `build_html.py` downsamples each one to at most 600 points in
+`streams/<id>.json` (~15 KB), which `viewer.html` charts, with hover linked to
+a marker on the map. A stored stream never changes, so existing files are
+skipped; pass `--rebuild-streams` after changing `streams.downsample`.
+
+How streams get filled:
+
+```bash
+# Every `update` also fetches streams for up to 80 activities that lack them,
+# newest first (one read request each; stays inside the 100/15-min window).
+uv run strava-db update                       # --streams-budget 0 to skip
+
+# Bulk backfill from the API (~900/day, sleeps through rate-limit windows):
+uv run strava-db backfill-streams --streams-budget 900
+
+# Bulk backfill from a Strava export (fast, no API calls): reads
+# activities.csv and the original .fit/.gpx/.tcx(.gz) files.
+uv run strava-db import-streams ~/Downloads/export_12345.zip   # or extracted dir
+```
+
+Manual activities have no streams and are skipped. A 404 from the API is
+recorded as `source='none'` so it isn't retried, and an archive import fills
+those in anyway. Archive imports don't replace API streams unless you pass
+`--force`.
 
 ## Development
 

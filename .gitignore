@@ -5,6 +5,8 @@
 .venv/
 
 # Generated / large artifacts
+# streams.db: full-res time series, local only (re-derivable from API/archive)
+streams.db
 # strava.db is intentionally committed (read-only metadata, no secrets)
 *.db-shm
 *.db-wal

@@ -64,5 +64,10 @@ archaeology session are seeded in `strava.db` tables `components` and
 - Keep Claude's memories in this file, not only in the hidden per-user
   memory directory, so they are readable and versioned with the repo.
 - After a `strava-db update`, rebuild with `build_html.py` and commit
-  `index.html`, `strava.db` and `activities/` together (activities/ holds the
-  per-activity JSON that `viewer.html?id=` reads).
+  `index.html`, `strava.db`, `activities/` and `streams/` together
+  (per-activity JSON that `viewer.html?id=` reads). The daily run is the
+  Claude scheduled task `daily-health-data-update` ->
+  `~/projects/maintain/update-health-data.sh` (stages those dirs since
+  2026-11-09).
+- `streams.db` (full-res streams) is local-only/gitignored; if lost, re-run
+  `import-streams` on a Strava export, then `backfill-streams` for the rest.
