@@ -71,3 +71,14 @@ archaeology session are seeded in `strava.db` tables `components` and
   2026-11-09).
 - `streams.db` (full-res streams) is local-only/gitignored; if lost, re-run
   `import-streams` on a Strava export, then `backfill-streams` for the rest.
+
+## Dashboard look (2026-11-09)
+
+- `index.html` (template in `build_html.py`) and `viewer.html` use the shared
+  kit `ar.css` / `ar.js` vendored from `~/projects/2026/dashboard-kit` (edit
+  there, `./sync.sh` copies here) and d3 v7 for every chart; Leaflet is only
+  the map. Colours come from kit CSS variables, no hex in chart code.
+- `HTML_TEMPLATE` is a raw string with plain JS braces; `{data_js}` and
+  `{generated}` are filled with `.replace()`, not `.format()`.
+- `build_html.render_html(db)` returns just the page text, for iterating on
+  the template without touching `activities/` and `streams/`.

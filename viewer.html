@@ -1,102 +1,91 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" data-site="strava">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="ar-repo" content="strava-database">
 <title>Activity · Andy's Strava</title>
+<link rel="stylesheet" href="ar.css">
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
-<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
 <!--
   Static activity viewer for strava.andyreagan.com.
   Usage: viewer.html?id=<strava activity id>
   Loads activities/<id>.json (written by build_html.py from strava.db) and
   renders stats, the route, and (when streams/<id>.json exists) elevation /
   HR / pace / power / cadence charts linked to a marker on the map. Adapted from the map/stat-card layout
-  of ~/websites/tools/fitness-activity-viewer.
+  of ~/websites/tools/fitness-activity-viewer. Page frame, colours and chart
+  classes come from the shared dashboard kit (ar.css / ar.js); the charts are
+  d3, the map is Leaflet.
 -->
 <style>
-  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-  :root {
-    --bg: #0f1117; --surface: #1a1d27; --border: #2a2d3a;
-    --accent: #fc4c02; --text: #e8eaf0; --muted: #8b90a0; --good: #43aa8b;
-    --radius: 8px; --font: 'Inter', system-ui, sans-serif;
-  }
-  body { font-family: var(--font); background: var(--bg); color: var(--text);
-         font-size: 14px; line-height: 1.5; }
-  a { color: var(--accent); text-decoration: none; }
-  a:hover { text-decoration: underline; }
-  header { background: var(--surface); border-bottom: 1px solid var(--border);
-           padding: 12px 16px; display: flex; align-items: center; gap: 16px;
-           flex-wrap: wrap; }
-  header h1 { font-size: 1.2rem; font-weight: 700; }
-  header nav { margin-left: auto; display: flex; gap: 14px; font-size: 0.9rem; }
-  .container { max-width: 1100px; margin: 0 auto; padding: 20px 16px; }
-  .title { font-size: 1.6rem; font-weight: 700; line-height: 1.25; margin-bottom: 4px;
-           overflow-wrap: anywhere; }
-  .meta { color: var(--muted); display: flex; flex-wrap: wrap; gap: 6px 10px;
-          align-items: center; margin-bottom: 16px; }
-  .badge { display: inline-block; padding: 1px 8px; border-radius: 99px;
-           font-size: 0.75rem; font-weight: 600; background: var(--border); color: var(--text); }
-  .badge.Run { background: #2d4a3e; color: #43aa8b; }
-  .badge.VirtualRun { background: #1e3a2d; color: #76c893; }
-  .badge.TrailRun { background: #2a3a1e; color: #a7c957; }
-  .badge.Ride { background: #3a2d1a; color: #f8961e; }
-  .badge.VirtualRide { background: #2d1a3a; color: #c77dff; }
-  .badge.EBikeRide { background: #1a2a1a; color: #80b918; }
-  .badge.GravelRide { background: #3a2a1a; color: #f4a261; }
-  .badge.MountainBikeRide { background: #2a1a1a; color: #e76f51; }
-  .badge.Walk { background: #1e2a3a; color: #5fa8d3; }
-  .badge.Hike { background: #2a1e3a; color: #9d77c9; }
-  .badge.Swim { background: #1a2e3a; color: #48bfe3; }
-  .badge.flag { background: #3a1e1e; color: #fc8d62; }
-  .stats { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
-           gap: 10px; margin-bottom: 16px; }
-  .stat { background: var(--surface); border: 1px solid var(--border);
-          border-radius: var(--radius); padding: 10px 12px; }
-  .stat .label { color: var(--muted); font-size: 0.75rem; text-transform: uppercase;
-                 letter-spacing: 0.04em; }
-  .stat .value { font-size: 1.35rem; font-weight: 700; font-variant-numeric: tabular-nums; }
-  .stat .unit { color: var(--muted); font-size: 0.85rem; margin-left: 2px; }
-  #map { height: 460px; border-radius: var(--radius); border: 1px solid var(--border);
-         background: var(--surface); margin-bottom: 16px; }
-  .nomap { color: var(--muted); padding: 24px; text-align: center;
-           background: var(--surface); border: 1px solid var(--border);
-           border-radius: var(--radius); margin-bottom: 16px; }
-  .charts { display: grid; gap: 12px; margin-bottom: 16px; }
-  .chart { background: var(--surface); border: 1px solid var(--border);
-           border-radius: var(--radius); padding: 10px 12px 6px; }
-  .chart h3 { font-size: 0.75rem; font-weight: 600; color: var(--muted);
-              text-transform: uppercase; letter-spacing: 0.04em; margin-bottom: 4px;
-              display: flex; justify-content: space-between; }
-  .chart h3 .readout { color: var(--text); text-transform: none; letter-spacing: 0;
-                       font-variant-numeric: tabular-nums; }
-  .chart .wrap { position: relative; height: 130px; }
-  .pager { display: flex; justify-content: space-between; gap: 12px; color: var(--muted); }
-  .msg { color: var(--muted); padding: 40px 0; text-align: center; }
-  .hidden { display: none; }
-  @media (max-width: 600px) { #map { height: 320px; } .title { font-size: 1.3rem; } }
+/* page-local: only what the kit lacks */
+a { text-decoration: none; }
+.content { width: 100%; max-width: 1156px; margin: 0 auto; }
+.topbar h1 { overflow-wrap: anywhere; }
+.hidden { display: none; }
+.meta { color: var(--muted); display: flex; flex-wrap: wrap; gap: 6px 8px;
+        align-items: center; margin-bottom: 16px; }
+.badge.sport::before { content: ''; display: inline-block; width: 7px; height: 7px;
+                       border-radius: 50%; background: var(--c, var(--gray)); margin-right: 5px; }
+.badge.flag { color: var(--accent); }
+.meta .badge { background: var(--surface); border: 1px solid var(--border); }
+.kpi-card .unit { color: var(--muted); font-size: 0.85rem; font-weight: 600; margin-left: 3px; }
+.kpi-card .kpi-value { font-variant-numeric: tabular-nums; }
+.map-card { padding: 0; overflow: hidden; margin-bottom: 16px; }
+#map { height: 460px; z-index: 0; background: var(--surface-2); }   /* z-index: keep Leaflet's panes under the sticky bars */
+#charts .metric-card { padding: 14px 16px 8px; margin-bottom: 12px; }
+#charts .metric-card-header { align-items: baseline; }
+.readout { font-size: 0.8rem; font-weight: 600; color: var(--text); font-variant-numeric: tabular-nums;
+           white-space: nowrap; min-height: 1.2em; }
+.pager { display: flex; justify-content: space-between; gap: 12px; margin-top: 16px; }
+@media (max-width: 600px) { #map { height: 320px; } }
+
+/* Leaflet: route + markers take kit colours; controls follow the theme */
+.route-line { stroke: var(--accent); }
+.hover-dot { fill: var(--accent); stroke: var(--chrome-strong); }
+.end-dot { width: 22px; height: 22px; border-radius: 50%; border: 3px solid var(--chrome-strong);
+           box-shadow: 0 1px 4px rgba(0,0,0,.4); color: var(--chrome-strong);
+           font: 700 11px/16px system-ui; text-align: center; }
+.leaflet-container { font-family: var(--font); }
+.leaflet-bar a, .leaflet-bar a:hover { background: var(--surface); color: var(--text); border-bottom-color: var(--border); }
+.leaflet-container .leaflet-control-attribution { background: var(--surface); color: var(--muted); opacity: .85; }
+.leaflet-container .leaflet-control-attribution a { color: var(--muted); }
+/* OSM tiles are light-only: in the dark theme invert them (hue kept) and mute them */
+@media (prefers-color-scheme: dark) {
+  :root:where(:not([data-theme="light"])) .leaflet-tile-pane {
+    filter: invert(1) hue-rotate(180deg) brightness(.95) contrast(.88) saturate(.7); }
+}
+:root[data-theme="dark"] .leaflet-tile-pane {
+  filter: invert(1) hue-rotate(180deg) brightness(.95) contrast(.88) saturate(.7); }
 </style>
+<script src="https://cdn.jsdelivr.net/npm/d3@7.9.0/dist/d3.min.js"></script>
+<script src="ar.js"></script>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 </head>
-<body>
-<header>
-  <h1><a href="./">Andy's Strava</a></h1>
-  <nav>
-    <a id="strava-link" href="https://www.strava.com/athletes" target="_blank" rel="noopener">View on Strava ↗</a>
-  </nav>
-</header>
-<div class="container">
-  <div id="msg" class="msg">Loading…</div>
-  <div id="content" class="hidden">
-    <div class="title" id="title"></div>
-    <div class="meta" id="meta"></div>
-    <div class="stats" id="stats"></div>
-    <div id="map"></div>
-    <div id="nomap" class="nomap hidden">No GPS route for this activity.</div>
-    <div class="charts" id="charts"></div>
-    <div class="pager">
-      <a id="prev" href="#">‹ Previous activity</a>
-      <a id="next" href="#">Next activity ›</a>
+<body class="no-sidebar">
+<div class="main">
+  <div class="topbar">
+    <div>
+      <h1 id="title">Activity</h1>
+      <div class="subtitle" id="when">Andy's Strava</div>
+    </div>
+    <div class="btn-group">
+      <a class="btn" href="./">‹ Dashboard</a>
+      <a class="btn" id="strava-link" href="https://www.strava.com/athletes" target="_blank" rel="noopener">View on Strava ↗</a>
+    </div>
+  </div>
+  <div class="content">
+    <div id="msg" class="empty">Loading…</div>
+    <div id="content" class="hidden">
+      <div class="meta" id="meta"></div>
+      <div class="kpi-strip" id="stats"></div>
+      <div class="metric-card map-card" id="map-card"><div id="map"></div></div>
+      <div id="nomap" class="note hidden">No GPS route for this activity.</div>
+      <div id="charts"></div>
+      <div class="pager">
+        <a class="btn" id="prev" href="#">‹ Previous activity</a>
+        <a class="btn" id="next" href="#">Next activity ›</a>
+      </div>
     </div>
   </div>
 </div>
@@ -104,6 +93,13 @@
 const WORKOUT_LABELS = {1: 'Race', 2: 'Long Run', 3: 'Workout', 11: 'Race', 12: 'Workout'};
 const PACE_SPORTS = /Run|Walk|Hike/;
 const M_TO_MI = 0.000621371, M_TO_FT = 3.28084, MS_TO_MPH = 2.23694;
+
+// sport → kit series colour, same mapping as the dashboard
+const SPORT_VARS = {
+  Ride: 'accent', Run: 'blue', EBikeRide: 'yellow', VirtualRide: 'pink',
+  Walk: 'teal', VirtualRun: 'purple', Hike: 'green', TrailRun: 'teal',
+  GravelRide: 'red', MountainBikeRide: 'green', Swim: 'blue',
+};
 
 const $ = id => document.getElementById(id);
 const esc = s => String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'})[c]);
@@ -137,10 +133,11 @@ function decodePolyline(str) {
   return out;
 }
 
-function stat(label, value, unit = '') {
+function stat(label, value, unit = '', color = '') {
   if (value == null || value === '' || Number.isNaN(value)) return '';
-  return `<div class="stat"><div class="label">${label}</div>
-    <div><span class="value">${value}</span><span class="unit">${unit}</span></div></div>`;
+  return `<div class="kpi-card"${color ? ` style="--kpi-color:var(--${color})"` : ''}>
+    <div class="kpi-label">${label}</div>
+    <div class="kpi-value">${value}<span class="unit">${unit}</span></div></div>`;
 }
 
 function render(a) {
@@ -154,29 +151,29 @@ function render(a) {
     when = d.toLocaleString('en-US', { timeZone: tz || undefined, weekday: 'short',
       year: 'numeric', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
   } catch { when = (a.start_date_local || '').replace('T', ' ').replace('Z', ''); }
+  $('when').textContent = when + (a.gear_name ? ` · ${a.gear_name}` : '');
 
-  const badges = [`<span class="badge ${esc(a.sport_type || '')}">${esc(a.sport_type || 'Activity')}</span>`];
+  const badges = [`<span class="badge sport" style="--c:var(--${SPORT_VARS[a.sport_type] || 'gray'})">${esc(a.sport_type || 'Activity')}</span>`];
   if (WORKOUT_LABELS[a.workout_type]) badges.push(`<span class="badge flag">${WORKOUT_LABELS[a.workout_type]}</span>`);
   if (a.commute) badges.push('<span class="badge">commute</span>');
   if (a.trainer) badges.push('<span class="badge">trainer</span>');
   if (a.manual) badges.push('<span class="badge">manual</span>');
-  $('meta').innerHTML = `<span>${esc(when)}</span>${badges.join('')}` +
-    (a.gear_name ? `<span>· ${esc(a.gear_name)}</span>` : '');
+  $('meta').innerHTML = badges.join('');
 
   const pace = PACE_SPORTS.test(a.sport_type || '');
   const r = (x, n = 0) => x == null ? null : Number(x).toFixed(n);
   $('stats').innerHTML = [
-    a.distance_m ? stat('Distance', r(a.distance_m * M_TO_MI, 2), 'mi') : '',
+    a.distance_m ? stat('Distance', r(a.distance_m * M_TO_MI, 2), 'mi', 'accent') : '',
     stat('Moving time', fmtDur(a.moving_time_s)),
     a.elapsed_time_s !== a.moving_time_s ? stat('Elapsed', fmtDur(a.elapsed_time_s)) : '',
-    a.distance_m ? stat('Elevation', r(a.total_elevation_m * M_TO_FT), 'ft') : '',
-    a.distance_m ? (pace ? stat('Avg pace', fmtPace(a.average_speed_ms), '/mi')
-                         : stat('Avg speed', r(a.average_speed_ms * MS_TO_MPH, 1), 'mph')) : '',
-    a.distance_m && !pace ? stat('Max speed', r(a.max_speed_ms * MS_TO_MPH, 1), 'mph') : '',
-    stat('Avg HR', r(a.average_heartrate), 'bpm'),
-    stat('Max HR', r(a.max_heartrate), 'bpm'),
-    stat(a.device_watts ? 'Avg power' : 'Est. power', r(a.average_watts), 'W'),
-    stat('Cadence', r(a.average_cadence), pace ? 'spm' : 'rpm'),
+    a.distance_m ? stat('Elevation', r(a.total_elevation_m * M_TO_FT), 'ft', 'gray') : '',
+    a.distance_m ? (pace ? stat('Avg pace', fmtPace(a.average_speed_ms), '/mi', 'teal')
+                         : stat('Avg speed', r(a.average_speed_ms * MS_TO_MPH, 1), 'mph', 'orange')) : '',
+    a.distance_m && !pace ? stat('Max speed', r(a.max_speed_ms * MS_TO_MPH, 1), 'mph', 'orange') : '',
+    stat('Avg HR', r(a.average_heartrate), 'bpm', 'red'),
+    stat('Max HR', r(a.max_heartrate), 'bpm', 'red'),
+    stat(a.device_watts ? 'Avg power' : 'Est. power', r(a.average_watts), 'W', 'purple'),
+    stat('Cadence', r(a.average_cadence), pace ? 'spm' : 'rpm', 'blue'),
     stat('Calories', r(a.calories)),
     stat('Relative effort', r(a.suffer_score)),
     a.kudos_count ? stat('Kudos', a.kudos_count) : '',
@@ -193,58 +190,121 @@ let map = null, hoverMarker = null, mapPts = [];
 function renderMap(pts) {
   mapPts = pts;
   if (pts.length < 2) {
-    $('map').classList.add('hidden');
+    $('map-card').classList.add('hidden');
     $('nomap').classList.remove('hidden');
     return;
   }
   map = L.map('map');
   L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
     attribution: '© OpenStreetMap contributors', maxZoom: 19 }).addTo(map);
-  const line = L.polyline(pts, { color: '#fc4c02', weight: 3, opacity: 0.9 }).addTo(map);
+  const line = L.polyline(pts, { className: 'route-line', weight: 3, opacity: 0.9 }).addTo(map);
   const dot = (bg, t) => L.divIcon({ className: '', iconSize: [22, 22], iconAnchor: [11, 11],
-    html: `<div style="background:${bg};width:22px;height:22px;border-radius:50%;border:3px solid #fff;box-shadow:0 1px 4px rgba(0,0,0,.4);color:#fff;font:700 11px/16px system-ui;text-align:center">${t}</div>` });
-  L.marker(pts[0], { icon: dot('#22c55e', 'S') }).addTo(map);
-  L.marker(pts[pts.length - 1], { icon: dot('#ef4444', 'F') }).addTo(map);
+    html: `<div class="end-dot" style="background:var(--${bg})">${t}</div>` });
+  L.marker(pts[0], { icon: dot('good', 'S') }).addTo(map);
+  L.marker(pts[pts.length - 1], { icon: dot('bad', 'F') }).addTo(map);
   map.fitBounds(line.getBounds(), { padding: [30, 30], maxZoom: 15 });
 }
 
 // ── Charts from streams/<id>.json (see streams.downsample) ──────────────
+// One d3 line chart per stream; hovering any of them moves a crosshair on
+// all of them and a marker along the route.
 const charts = [];
 let llIndex = null;  // sample index -> mapPts index
+let chartUid = 0;
 
 function syncHover(i) {
-  for (const c of charts) {
-    if (i == null) { c.setActiveElements([]); c.tooltip.setActiveElements([]); }
-    else {
-      const el = [{ datasetIndex: 0, index: i }];
-      c.setActiveElements(el);
-    }
-    c.$hoverIndex = i;
-    c.draw();
-    const v = i == null ? null : c.data.datasets[0].data[i].y;
-    c.$readout.textContent = v == null ? '' : c.$fmt(v);
-  }
+  for (const c of charts) c.show(i);
   if (!map) return;
   const k = i == null ? -1 : (llIndex ? llIndex[i] : i);
   if (k < 0 || !mapPts[k]) { if (hoverMarker) hoverMarker.remove(), hoverMarker = null; return; }
-  if (!hoverMarker) hoverMarker = L.circleMarker(mapPts[k], { radius: 6, color: '#fff',
-    weight: 2, fillColor: '#fc4c02', fillOpacity: 1 }).addTo(map);
+  if (!hoverMarker) hoverMarker = L.circleMarker(mapPts[k], { radius: 6, weight: 2,
+    className: 'hover-dot', fillOpacity: 1 }).addTo(map);
   else hoverMarker.setLatLng(mapPts[k]);
 }
 
-const crosshair = { id: 'crosshair', afterDraw(c) {
-  const i = c.$hoverIndex; if (i == null) return;
-  const x = c.scales.x.getPixelForValue(c.data.datasets[0].data[i].x);
-  const { top, bottom } = c.chartArea, ctx = c.ctx;
-  ctx.save(); ctx.strokeStyle = '#e8eaf0'; ctx.lineWidth = 1; ctx.globalAlpha = 0.6;
-  ctx.beginPath(); ctx.moveTo(x, top); ctx.lineTo(x, bottom); ctx.stroke(); ctx.restore();
-} };
+// draw now and again whenever the card's width changes
+function mount(el, height, draw) {
+  let lastW = -1;
+  const run = () => {
+    const w = Math.round(el.clientWidth);
+    if (w === lastW || !w) return;
+    lastW = w;
+    el.innerHTML = '';
+    const svg = d3.select(el).append('svg').attr('class', 'ar-chart')
+      .attr('viewBox', `0 0 ${w} ${height}`).attr('height', height);
+    draw(svg, w, height);
+  };
+  run();
+  new ResizeObserver(run).observe(el);
+}
+
+function streamChart(card, xs, ser, xFmt, xTick) {
+  const readout = card.querySelector('.readout');
+  const c = { show() {} };
+  charts.push(c);
+  const clipId = 'clip' + (++chartUid);
+  mount(card.querySelector('.chart-area'), 140, (svg, W, H) => {
+    const m = { t: 8, r: 12, b: 22, l: 44 };
+    const iw = W - m.l - m.r;
+    const x = d3.scaleLinear().domain([xs[0], xs[xs.length - 1]]).range([m.l, W - m.r]);
+    let lo, hi;
+    if (ser.domain) [lo, hi] = ser.domain;
+    else {
+      [lo, hi] = d3.extent(ser.y.filter(v => v != null));
+      if (lo === hi) { lo -= 1; hi += 1; }
+      const pad = (hi - lo) * 0.06; lo -= pad; hi += pad;
+    }
+    const y = d3.scaleLinear().domain(ser.reverse ? [hi, lo] : [lo, hi]).range([H - m.b, m.t]);
+
+    svg.append('g').attr('class', 'grid').attr('transform', `translate(${m.l},0)`)
+      .call(d3.axisLeft(y).ticks(4).tickSize(-iw).tickPadding(6)
+        .tickFormat(ser.tick || (v => d3.format('~g')(v))));
+    svg.append('g').attr('class', 'axis').attr('transform', `translate(0,${H - m.b})`)
+      .call(d3.axisBottom(x).ticks(Math.max(2, Math.floor(iw / 90))).tickSize(0).tickPadding(8).tickFormat(xTick));
+
+    svg.append('clipPath').attr('id', clipId).append('rect')
+      .attr('x', m.l).attr('y', m.t).attr('width', Math.max(0, iw)).attr('height', H - m.t - m.b);
+    const g = svg.append('g').attr('clip-path', `url(#${clipId})`);
+    const idx = d3.range(xs.length), def = i => ser.y[i] != null;
+    if (ser.fill) g.append('path').attr('fill', ser.color).attr('opacity', 0.16)
+      .attr('d', d3.area().defined(def).x(i => x(xs[i])).y0(H - m.b).y1(i => y(ser.y[i]))(idx));
+    g.append('path').attr('fill', 'none').attr('stroke', ser.color).attr('stroke-width', 1.5)
+      .attr('stroke-linejoin', 'round')
+      .attr('d', d3.line().defined(def).x(i => x(xs[i])).y(i => y(ser.y[i]))(idx));
+
+    const hover = svg.append('g').style('display', 'none').style('pointer-events', 'none');
+    const cross = hover.append('line').attr('class', 'crosshair').attr('y1', m.t).attr('y2', H - m.b);
+    const dot = hover.append('circle').attr('class', 'ring').attr('r', 4).attr('fill', ser.color);
+    c.show = i => {
+      if (i == null) { hover.style('display', 'none'); readout.textContent = ''; return; }
+      const v = ser.y[i], px = x(xs[i]);
+      hover.style('display', null);
+      cross.attr('x1', px).attr('x2', px);
+      const py = v == null ? null : y(v);
+      dot.style('display', py == null || py < m.t || py > H - m.b ? 'none' : null).attr('cx', px).attr('cy', py);
+      readout.textContent = v == null ? '' : `${ser.fmt(v)} @ ${xFmt(xs[i])}`;
+    };
+
+    svg.append('rect').attr('x', m.l).attr('y', m.t).attr('width', Math.max(0, iw)).attr('height', H - m.t - m.b)
+      .attr('fill', 'transparent')
+      .on('mousemove touchmove', ev => {
+        const e = ev.touches ? ev.touches[0] : ev;
+        const [px] = d3.pointer(e, svg.node());
+        const i = d3.bisectCenter(xs, x.invert(px));
+        syncHover(i);
+        const v = ser.y[i];
+        AR.tip.show(`<b>${xFmt(xs[i])}</b><br>${AR.swatch(ser.color)}<span class="dim">${ser.name}</span> ${v == null ? '—' : ser.fmt(v)}`, e);
+      })
+      .on('mouseleave touchend', () => { syncHover(null); AR.tip.hide(); });
+  });
+}
 
 function renderCharts(a, s) {
   const isRun = PACE_SPORTS.test(a.sport_type || '');
   const useDist = s.d && s.d[s.d.length - 1] > 100;
   const xs = useDist ? s.d.map(m => m * M_TO_MI) : s.t.map(t => t / 60);
   const xFmt = useDist ? v => `${v.toFixed(1)} mi` : v => fmtDur(v * 60);
+  const xTick = useDist ? v => `${d3.format('~g')(v)} mi` : v => fmtDur(v * 60);
 
   // speed (m/s): recorded smooth velocity, else derived from distance/time
   let speed = s.v ? s.v.map(v => v == null ? null : v / 100) : null;
@@ -255,58 +315,36 @@ function renderCharts(a, s) {
   });
 
   const series = [];
-  if (s.alt) series.push({ name: 'Elevation', color: '#8b90a0', fill: true,
+  if (s.alt) series.push({ name: 'Elevation', color: 'var(--gray)', fill: true,
     y: s.alt.map(v => v == null ? null : v / 10 * M_TO_FT), fmt: v => `${Math.round(v)} ft` });
-  if (s.hr) series.push({ name: 'Heart rate', color: '#ef4444',
+  if (s.hr) series.push({ name: 'Heart rate', color: 'var(--red)',
     y: s.hr, fmt: v => `${Math.round(v)} bpm` });
   if (speed) {
-    if (isRun) series.push({ name: 'Pace', color: '#43aa8b', reverse: true,
+    if (isRun) series.push({ name: 'Pace', color: 'var(--teal)', reverse: true,
       y: speed.map(v => v && v > 0.7 ? 1609.344 / v / 60 : null),  // min/mi; drop stops
       fmt: v => `${fmtDur(v * 60)} /mi`, tick: v => fmtDur(v * 60), clip: true });
-    else series.push({ name: 'Speed', color: '#f8961e',
+    else series.push({ name: 'Speed', color: 'var(--orange)',
       y: speed.map(v => v == null ? null : v * MS_TO_MPH), fmt: v => `${v.toFixed(1)} mph` });
   }
-  if (s.w) series.push({ name: 'Power', color: '#c77dff', y: s.w, fmt: v => `${Math.round(v)} W` });
-  if (s.cad) series.push({ name: 'Cadence', color: '#5fa8d3',
+  if (s.w) series.push({ name: 'Power', color: 'var(--purple)', y: s.w, fmt: v => `${Math.round(v)} W` });
+  if (s.cad) series.push({ name: 'Cadence', color: 'var(--blue)',
     y: s.cad.map(v => v == null ? null : isRun ? v * 2 : v),
     fmt: v => `${Math.round(v)} ${isRun ? 'spm' : 'rpm'}` });
 
   const host = $('charts');
   for (const ser of series) {
     if (!ser.y.some(v => v)) continue;  // all null/zero: sensor absent
-    let yMin, yMax;
     if (ser.clip) {  // pace spikes at stops would flatten the chart
       const v = ser.y.filter(x => x != null).sort((p, q) => p - q);
       const q = f => v[Math.min(v.length - 1, Math.floor(f * v.length))];
-      yMin = Math.floor(q(0.02)); yMax = Math.ceil(q(0.98));
+      ser.domain = [Math.floor(q(0.02)), Math.ceil(q(0.98))];
     }
     const card = document.createElement('div');
-    card.className = 'chart';
-    card.innerHTML = `<h3><span>${ser.name}</span><span class="readout"></span></h3><div class="wrap"><canvas></canvas></div>`;
+    card.className = 'metric-card';
+    card.innerHTML = `<div class="metric-card-header"><div class="metric-card-title">${ser.name}</div>` +
+      `<div class="readout"></div></div><div class="chart-area"></div>`;
     host.appendChild(card);
-    const c = new Chart(card.querySelector('canvas'), {
-      type: 'line',
-      data: { datasets: [{ data: xs.map((x, i) => ({ x, y: ser.y[i] })),
-        borderColor: ser.color, backgroundColor: ser.color + '33', fill: !!ser.fill,
-        borderWidth: 1.5, pointRadius: 0, pointHoverRadius: 0, spanGaps: false }] },
-      options: {
-        animation: false, maintainAspectRatio: false, parsing: false, normalized: true,
-        interaction: { mode: 'index', axis: 'x', intersect: false },
-        plugins: { legend: { display: false }, tooltip: { enabled: false } },
-        scales: {
-          x: { type: 'linear', min: xs[0], max: xs[xs.length - 1],
-               grid: { color: '#2a2d3a' }, ticks: { color: '#8b90a0', callback: xFmt, maxTicksLimit: 8 } },
-          y: { reverse: !!ser.reverse, min: yMin, max: yMax, grid: { color: '#2a2d3a' },
-               ticks: { color: '#8b90a0', maxTicksLimit: 4, callback: ser.tick } },
-        },
-        onHover: (e, els) => syncHover(els.length ? els[0].index : null),
-      },
-      plugins: [crosshair],
-    });
-    c.$fmt = v => `${ser.fmt(v)} @ ${xFmt(xs[c.$hoverIndex])}`;
-    c.$readout = card.querySelector('.readout');
-    card.querySelector('canvas').addEventListener('mouseleave', () => syncHover(null));
-    charts.push(c);
+    streamChart(card, xs, ser, xFmt, xTick);
   }
 }
 
