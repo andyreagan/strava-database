@@ -95,6 +95,8 @@ STRAVA_API_BASE  = "https://www.strava.com/api/v3"
 # Short-term: 100 req / 15 min.  We back off at 90 to stay safe.
 _SHORT_TERM_LIMIT = 90
 _SHORT_TERM_WINDOW_SECS = 15 * 60  # 15 minutes
+# (connect, read) seconds. Without this a stalled response blocks forever.
+_HTTP_TIMEOUT = (10, 60)
 
 _request_times: list[float] = []   # timestamps of recent requests
 
@@ -144,7 +146,7 @@ class StravaClient:
             "client_secret": self.client_secret,
             "grant_type":    "refresh_token",
             "refresh_token": self.refresh_token,
-        })
+        }, timeout=_HTTP_TIMEOUT)
         resp.raise_for_status()
         data = resp.json()
         self.access_token  = data["access_token"]
@@ -157,7 +159,8 @@ class StravaClient:
         _maybe_sleep()
         url = f"{STRAVA_API_BASE}{path}"
         headers = {"Authorization": f"Bearer {self.access_token}"}
-        resp = self.session.get(url, headers=headers, params=params or {})
+        resp = self.session.get(url, headers=headers, params=params or {},
+                                timeout=_HTTP_TIMEOUT)
         _record_request()
 
         if resp.status_code == 401 and retry:
